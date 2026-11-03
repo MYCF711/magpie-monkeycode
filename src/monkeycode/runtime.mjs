@@ -25,6 +25,7 @@ import { profileDirFor, readCookiesSilently, startBrowserLogin } from "../sessio
 import { findBrowser } from "../browser-login.mjs"
 import { importOneBaizhiAccount, signInWithBaizhiSession } from "./sso-import.mjs"
 import { KNOWN_CONTEXT, isStale, prettyModelName, readCatalog, refreshCatalog } from "./catalog.mjs"
+import { AGREE_PROTOCOL_JS } from "../baizhi/runtime.mjs"
 
 /**
  * magpie 里是不是已经有这个 uid 的账号了。
@@ -394,6 +395,8 @@ export function makePlugin(site) {
                       cookieDomains: domains,
                       profileDir,
                       timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
+                      // 百智云登录页：自动点「其他登录方式」第 4 个（观猹）+ watcha 的「继续」。
+                      onPoll: AGREE_PROTOCOL_JS,
                       async accept() {
                         return true
                       },

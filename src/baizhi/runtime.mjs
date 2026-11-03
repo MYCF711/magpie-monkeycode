@@ -229,22 +229,17 @@ async function openKeyPage(keysUrl) {
  * 百智云的登录页是**微信扫码**默认，但那个协议复选框不勾，扫码会在背后静默失败
  * —— 用户以为是自己没扫上（2026-11-04 真机：「观猹注册的账号扫微信登不进来」）。
  */
-const AGREE_PROTOCOL_JS = `(() => {
-  // 1) 勾掉「阅读并同意用户协议、隐私政策」（百智云不勾就不放行扫码）
+export const AGREE_PROTOCOL_JS = `(() => {
+  // 1) 勾掉「阅读并同意用户协议、隐私政策」（百智云不勾就不放行）
   const boxes = [...document.querySelectorAll('input[type=checkbox]')].filter((el) => !el.checked);
   for (const box of boxes) box.click();
-  if (boxes.length === 0) {
-    const fake = [...document.querySelectorAll('[role=checkbox], [class*=checkbox], [class*=agree]')]
-      .find((el) => el.getAttribute('aria-checked') !== 'true' && !el.classList.contains('checked'));
-    if (fake) fake.click();
-  }
 
-  // 2) 观猹（watcha.cn）授权页：点「继续」才把授权交回百智云。
-  //    用户在百智云点「其他登录方式 → 微信/观猹图标」会跳到
-  //    watcha.cn/login?client_id=…&redirect_uri=https://baizhi.cloud/api/v1/oauth/…
-  //    那一页上只有一个绿色「继续」—— 不点就永远回不到 baizhi.cloud，
-  //    插件等 sl-session 等到超时（真机：观猹账号登录拿不到 cookie）。
   const host = location.hostname;
+
+  // 2) watcha.cn（观猹）：点绿色「继续」把授权交回百智云。
+  //    baizhi.cloud/sign-in 的「其他登录方式」第 4 个图标就是观猹，
+  //    点它会跳到 watcha.cn/login?client_id=…&redirect_uri=https://baizhi.cloud/api/v1/oauth/…
+  //    那一页只有一个「继续」—— 不点永远回不到 baizhi.cloud。
   if (/watcha\.cn$/.test(host)) {
     const go = [...document.querySelectorAll('button,a,[role=button]')]
       .find((el) => ((el.textContent || '') + '').trim() === '继续');
@@ -252,9 +247,23 @@ const AGREE_PROTOCOL_JS = `(() => {
       go.click();
       return 'watcha-continue';
     }
+    return 'watcha-wait';
   }
 
-  // 3) 百智云自己的 OAuth 授权确认页（若有）
+  // 3) 百智云登录页：直接点「其他登录方式」里的**第 4 个图标（观猹）**。
+  //    这一排依序是 支付宝 / 抖音 / GitHub / 观猹，四个都是
+  //    button.w-10.h-10.rounded-full（图标是内联 svg，没有 alt/href，只能按位置取）。
+  //    默认的「微信扫码」是另一条路，用户要的是观猹账号（2026-11-04 明确要求）。
+  if (/baizhi\.cloud$/.test(host)) {
+    const ways = [...document.querySelectorAll('button')]
+      .filter((b) => /w-10 h-10 rounded-full/.test(b.getAttribute('class') || ''));
+    if (ways.length >= 4) {
+      ways[3].click();
+      return 'watcha-icon';
+    }
+  }
+
+  // 4) 百智云自己的 OAuth 授权确认页（若有）
   const auth = [...document.querySelectorAll('button,a,[role=button]')]
     .find((el) => /确认授权|同意授权|允许授权/.test(((el.textContent || '') + '').trim()));
   if (auth) auth.click();
