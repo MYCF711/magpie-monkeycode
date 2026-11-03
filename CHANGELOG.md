@@ -14,6 +14,7 @@
 - **国际站删掉「用百智云账号开通」**：实测 `GET https://monkeycode-ai.net/api/v1/users/login` 302 到它**自己的** `/oauth/authorize`（`client_id=` 是空的，不经过 `baizhi.cloud`）；把百智云会话注入那个窗口再走一遍，最终只落到国际站首页，**不会**签发 `monkeycode_ai_session`。留着只会让人对着一个必然超时的入口等 240 秒
 - 「从本机客户端导入」**改按域读 cookie，并恢复给国际站**（0.2.33 删它是因为当时桌面端指向国内站）：桌面客户端的 `mc_base_url` 是国内站 / 国际站二选一的一个值，`monkeycode-cookies.json` 里装的是**当前那一站**的会话。现在按本站 host 过滤，读到另一站的登录态时会明确说「桌面客户端登录的是另一个站点」，而不是让上游 401 把人引去怀疑「登录过期」
 - `AGENTS.md` 0.7 从「未修复」改为修复记录（保留原判据）；0.6 补上国际站登录方式与「不认百智云 SSO」的实测结论
+- 新增 `node scripts/check-intl-signin.mjs`：把 AGENTS 0.7 的两条判据做成一条命令 —— 看 `plugin-auth.json` 里有没有 `monkeycodeintl` 的记录（含 uid），再看本机网关 `/v1/models` 里有没有 `monkeycodeintl/…`。只读、不发写请求；可选 `--cookie '…'` 验一次平台会话。退出码 2 = 有判据不成立
 
 ## 0.2.35 — 2026-11-04
 
