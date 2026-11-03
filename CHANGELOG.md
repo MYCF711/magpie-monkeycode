@@ -3,6 +3,15 @@
 > 每个版本一节，**一条一行**，说用户能感知的变化。
 > 格式与规矩见 [UPDATING.md](./UPDATING.md)。
 
+## 0.2.38 — 2026-11-04
+
+**模型列表再按订阅档位收窄：basic 账号不再看到 pro / ultra 的池**
+
+- 平台把同一个模型的 `basic` / `pro` / `ultra` 三个额度池各列一条，basic 账号拿到 pro / ultra 那几条，选了就是 403。现在登录时先推档位（`/users/subscription` 的 `plan`，拿不到就用钱包的 `daily_token_limit` 反推 10M / 100M / 300M），只留该档及以下的池 + 无前缀（积分）条目
+- 实测：**国际站 basic 账号 4 条 → 2 条**（platform 给的 basic/glm 与 basic/deepseek-flash），**国内站 21 条 → 13 条**（5 basic + 8 积分）
+- 档位拿不到就不收窄；收窄后一条不剩也原样返回 —— 宁可多列，也不把列表清空
+- `resolveTier()`（credits.mjs）+ `filterByTier()`（catalog.mjs）+ 单测四档 / 未知档位 / 空结果兜底
+
 ## 0.2.37 — 2026-11-04
 
 **模型列表只列「你这个账号现在能调什么」，basic / pro / ultra / 积分四类混列没了**
