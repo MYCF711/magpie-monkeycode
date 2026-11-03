@@ -72,7 +72,7 @@ const LOGIN_AUTOPILOT_JS = `(() => {
 })()`
 
 import {
-  claimCheckin, cookieOf, exchangeSessionForKey, fetchPlan, fetchProfile, fetchWallet, PLAN_LABELS,
+  claimCheckin, cookieOf, exchangeSessionForKey, fetchPlan, fetchProfile, fetchWallet, PLAN_LABELS, resolveTier,
 } from "./credits.mjs"
 import { FALLBACK_SYSTEM, gatewayHeaders, isUsableCredential, parseBodyQuietly, parseCredential, signInSuccess, signingPrompt } from "./signing.mjs"
 
@@ -157,6 +157,17 @@ function builtinModels(site) {
     }
   }
   return out
+}
+
+/**
+ * 登录成功后把「这个账号能用哪些模型」落盘：先推出订阅档位，再按档位收窄目录。
+ *
+ * 档位拿不到就不收窄（`filterByTier` 原样返回）；整条链路失败也不阻塞登录 ——
+ * 最差退回内置快照。
+ */
+async function warmSignInCatalog(cookie, site, fetchImpl) {
+  const tier = await resolveTier(cookie, site, { fetchImpl }).catch(() => undefined)
+  return warmCatalog(cookie, site, { fetchImpl, tier }).catch(() => {})
 }
 
 /** 把凭据的 JSON 字符串解析成凭据对象；不可用时返回 undefined。 */
@@ -271,7 +282,7 @@ async function signInWithBrowser(site, { fetchImpl, signal } = {}) {
   // 登录成功的**这一刻**就把「这个账号能调什么」落盘：magpie 紧接着会调
   // `provider.models`，而那里只读缓存（钩子里发网络请求就会变成「已登录但
   // 无法列出它」）。失败不阻塞登录 —— 拉不到就退回内置快照。
-  await warmCatalog(cookie, site, { fetchImpl }).catch(() => {})
+  await warmSignInCatalog(cookie, site, fetchImpl)
   return signInSuccess({
     // MonkeyCode 的凭据是「一次性签发的静态材料」，没有 refresh_token ——
     // 整份 JSON 进 access；refresh 由 signInSuccess 填同一份（那一格是
@@ -383,7 +394,7 @@ export function makePlugin(site) {
                     if (!issued.ok) {
                       return { type: "failed", error: `登录成功，但换取网关凭据失败（${issued.error}）` }
                     }
-                    await warmCatalog(session.cookie, site).catch(() => {})
+                    await warmSignInCatalog(session.cookie, site)
                     const profile = await fetchProfile(session.cookie, site)
                     return signInSuccess({
                       access: JSON.stringify({
@@ -463,7 +474,7 @@ export function makePlugin(site) {
                           + "桌面版里的登录可能已经过期 —— 重新打开桌面版登录一次即可。",
                       }
                     }
-                    await warmCatalog(desk.cookie, site).catch(() => {})
+                    await warmSignInCatalog(desk.cookie, site)
                     const profile = await fetchProfile(desk.cookie, site)
                     return signInSuccess({
                       access: JSON.stringify({
@@ -708,7 +719,10 @@ export function makePlugin(site) {
           // **不带凭据、不探测** —— 平台清单本身就是「这个账号能调什么」，
           // 再拿 max_tokens:1 的探测筛一遍只会误杀能用的模型（见 catalog.mjs）。
           if (isStale(readCatalog(site.id)) && credential.session_cookie !== undefined) {
-            refreshCatalog(credential.session_cookie, site).catch(() => {})
+            // 沿用同一套口径：先推档位，再按档位收窄，否则刷新一次又变回「四类混列」。
+            resolveTier(credential.session_cookie, site)
+              .then((tier) => refreshCatalog(credential.session_cookie, site, { tier }))
+              .catch(() => {})
           }
           const key = credential.user_id ?? credential.access_token
           try {

@@ -112,3 +112,22 @@ test("签名 prompt：没有 system 的请求必须补 FALLBACK_SYSTEM（否则�
   const patched = JSON.stringify({ ...JSON.parse(bare), system: FALLBACK_SYSTEM })
   assert.equal(signingPrompt(parseBodyQuietly(patched)), FALLBACK_SYSTEM)
 })
+
+test("filterByTier：basic 账号只吃 basic 池与积分，够不着 pro / ultra", async () => {
+  const { filterByTier } = await import("../src/monkeycode/catalog.mjs")
+  const models = [
+    { id: "b", apiId: "monkeycode-basic/deepseek-flash" },
+    { id: "p", apiId: "monkeycode-pro/deepseek-flash" },
+    { id: "u", apiId: "monkeycode-ultra/deepseek-v4-pro" },
+    { id: "g", apiId: "glm-5" },
+  ]
+  assert.deepEqual(filterByTier(models, "basic").map((m) => m.id), ["b", "g"])
+  assert.deepEqual(filterByTier(models, "pro").map((m) => m.id), ["b", "p", "g"])
+  assert.deepEqual(filterByTier(models, "ultra").map((m) => m.id), ["b", "p", "u", "g"])
+  // 档位未知：不收窄（不做无根据的过滤）。
+  assert.deepEqual(filterByTier(models, undefined).map((m) => m.id), ["b", "p", "u", "g"])
+  assert.deepEqual(filterByTier(models, "free").map((m) => m.id), ["b", "p", "u", "g"])
+  // 收窄后为空 → 原样返回（宁可多列，也不把列表清空）。
+  const onlyPro = [{ id: "p", apiId: "monkeycode-pro/x" }]
+  assert.deepEqual(filterByTier(onlyPro, "basic").map((m) => m.id), ["p"])
+})

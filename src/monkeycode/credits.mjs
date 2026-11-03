@@ -164,6 +164,30 @@ export async function fetchPlan(cookie, site, { fetchImpl = fetch, timeoutMs = 1
 }
 
 /**
+ * 推断账号的订阅档位：`basic` / `pro` / `ultra`，拿不到就是 `undefined`。
+ *
+ * 两级来源，按可信度排：
+ *
+ * 1. `GET /api/v1/users/subscription` 的 `plan`（明确的说法，最可信）；
+ * 2. 该端点不给 plan 时（2026-11-04 国内站实测返回 undefined），用钱包的
+ *    `daily_token_limit` 反推 —— 三档的日额度是固定的 10M / 100M / 300M，
+ *    见 `PLAN_DAILY_LIMIT`。数值对不上就不猜。
+ *
+ * 用途只有一个：把模型目录收窄到这个账号真能吃的额度池（`filterByTier`）。
+ * 拿不到档位时**宁可不过滤**，也不要把列表清空。
+ */
+export async function resolveTier(cookie, site, { fetchImpl = fetch } = {}) {
+  const plan = await fetchPlan(cookie, site, { fetchImpl })
+  if (plan !== undefined) return plan
+  const wallet = await fetchWallet(cookie, site, { fetchImpl })
+  if (!wallet.ok) return undefined
+  const limit = wallet.dailyTokenLimit
+  if (typeof limit !== "number" || !Number.isFinite(limit)) return undefined
+  const hit = Object.entries(PLAN_DAILY_LIMIT).find(([, daily]) => daily === limit)
+  return hit?.[0]
+}
+
+/**
  * 读签到状态：`GET /api/v1/users/wallet/checkin` → `{ checked_in: boolean }`。
  *
  * 上游只给一个布尔，没有连续天数、没有奖励金额、没有活动期 —— 不编造。

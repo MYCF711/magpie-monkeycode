@@ -35,7 +35,7 @@ import { createServer } from "node:net"
 import { tmpdir } from "node:os"
 
 import { findBrowser } from "../browser-login.mjs"
-import { exchangeSessionForKey, fetchProfile } from "./credits.mjs"
+import { exchangeSessionForKey, fetchProfile, resolveTier } from "./credits.mjs"
 import { warmCatalog } from "./catalog.mjs"
 import { parseCredential } from "../credential.mjs"
 
@@ -273,7 +273,8 @@ export async function signInWithBaizhiSession(baizhiCookie, site, { fetchImpl = 
     // 顺手把平台目录拉一次落盘，并探测「这个号到底能用哪些」：
     // 模型 id 是平台下发的 UUID（内置快照早对不上），而上架 ≠ 有权限。
     // 登录成功就落盘目录（不探测：平台清单本身就是这个账号能调什么）。
-    await warmCatalog(cookieHeader, site, { fetchImpl }).catch(() => {})
+    const tier = await resolveTier(cookieHeader, site, { fetchImpl }).catch(() => undefined)
+    await warmCatalog(cookieHeader, site, { fetchImpl, tier }).catch(() => {})
     return {
       credential: {
         access_token: issued.apiKey,

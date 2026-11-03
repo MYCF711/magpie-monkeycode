@@ -293,6 +293,39 @@ export async function probeCatalog(credential, site, models, { concurrency = 4, 
 }
 
 /**
+ * 订阅档位 → 能用的额度池。数字越大越贵。
+ *
+ * 平台的目录是**按账号给的一份清单**，但它把同一个模型的三个额度池都列了
+ * （`monkeycode-basic/x` `monkeycode-pro/x` `monkeycode-ultra/x`）。basic 账号拿到
+ * pro / ultra 那几条，选了就是 403 —— 用户看到的是「怎么这么多」，挨个试才发现
+ * 一半用不了。所以按账号档位收窄：低档只能吃低档的池。
+ */
+const TIER_ORDER = Object.freeze({ basic: 0, pro: 1, ultra: 2 })
+
+/**
+ * 按账号档位过滤目录条目。
+ *
+ * 规则：无前缀（按积分计费）与 `monkeycode-basic/` 谁都能用；`monkeycode-pro/`
+ * 要 pro 及以上；`monkeycode-ultra/` 只有 ultra。
+ *
+ * 档位未知（拿不到订阅、也没有可信的每日额度）时**原样返回** —— 不做无根据的
+ * 收窄；过滤后为空也原样返回（宁可多列，也不把列表清空）。
+ *
+ * @param {Array<{ apiId?: string }>} models
+ * @param {string} [tier] `basic` | `pro` | `ultra`
+ */
+export function filterByTier(models, tier) {
+  const cap = TIER_ORDER[tier]
+  if (cap === undefined) return models
+  const kept = models.filter((model) => {
+    const hit = /^monkeycode-(basic|pro|ultra)\//.exec(String(model?.apiId ?? ""))
+    if (hit === null) return true
+    return TIER_ORDER[hit[1]] <= cap
+  })
+  return kept.length > 0 ? kept : models
+}
+
+/**
  * 拉一次并落盘（后台用）。永不抛错 —— 目录刷新失败不该打断任何用户操作。
  *
  * ⚠ **默认不探测**（`probe !== true`）：平台的 `GET /api/v1/users/models` 返回的
@@ -303,15 +336,16 @@ export async function probeCatalog(credential, site, models, { concurrency = 4, 
  *    这个形状挑刺，都会让一条本来能用的模型被标成 `usable: false` 而不显示；
  * 2. **每刷一次目录就打 N 个真请求**，白白消耗额度。
  *
- * 所以可用性以**平台清单**为准。探测保留成显式开关（`{ probe: true, credential }`），
- * 只在要复核「平台说了能调、实际 403」时才用。
+ * 所以可用性以**平台清单 + 账号档位**为准。探测保留成显式开关
+ * （`{ probe: true, credential }`），只在要复核「平台说了能调、实际 403」时才用。
  */
 export async function refreshCatalog(cookie, site, options = {}) {
   const result = await fetchCatalog(cookie, site, options)
   if (!result.ok) return false
+  const narrowed = filterByTier(result.models, options.tier)
   const models = options.probe === true && options.credential !== undefined
-    ? await probeCatalog(options.credential, site, result.models, options)
-    : result.models
+    ? await probeCatalog(options.credential, site, narrowed, options)
+    : narrowed
   return writeCatalog(site.id, models)
 }
 
@@ -323,13 +357,17 @@ export async function refreshCatalog(cookie, site, options = {}) {
  * 缓存没有内容时，`configModels` 只能退回内置快照 —— 用户看到的是一张跟自己
  * 账号无关的通用表（2026-11-04 用户反馈的「basic / pro / ultra / 积分怎么这么多」）。
  *
+ * `tier` 传账号的订阅档位（由 `resolveTier()` 推出来）：给了就按档位收窄，
+ * 拿不到就按平台清单原样落盘。
+ *
  * 失败**不阻塞登录**：拉不到就退回内置快照，但要说得出原因。
  *
  * @returns {Promise<{ ok: boolean, count?: number, error?: string }>}
  */
-export async function warmCatalog(cookie, site, { fetchImpl = fetch, timeoutMs = 20_000 } = {}) {
+export async function warmCatalog(cookie, site, { fetchImpl = fetch, timeoutMs = 20_000, tier } = {}) {
   const result = await fetchCatalog(cookie, site, { fetchImpl, timeoutMs })
   if (!result.ok) return { ok: false, error: result.error }
-  const written = writeCatalog(site.id, result.models)
-  return written ? { ok: true, count: result.models.length } : { ok: false, error: "目录缓存写不进去" }
+  const models = filterByTier(result.models, tier)
+  const written = writeCatalog(site.id, models)
+  return written ? { ok: true, count: models.length } : { ok: false, error: "目录缓存写不进去" }
 }
