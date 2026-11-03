@@ -1,3 +1,5 @@
+// 单测不许读开发机上的真实账号缓存（可能是「探测后全不可用 ⇒ 空表」）。
+process.env.MAGPIE_MONKEYCODE_CACHE_DIR = "C:\__magpie_test_cache__"
 // tests/request-rewrite.test.mjs —— JSON 请求体改写管道
 //
 // 全部离线，不构造真实上游；只锁「不该改的不要改、改过的要能看出改了」。

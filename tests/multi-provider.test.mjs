@@ -1,3 +1,5 @@
+// 单测不许读开发机上的真实账号缓存（可能是「探测后全不可用 ⇒ 空表」）。
+process.env.MAGPIE_MONKEYCODE_CACHE_DIR = "C:\__magpie_test_cache__"
 // tests/multi-provider.test.mjs —— 单包多区：三个供应商互不串味。
 //
 // 锁四件事：

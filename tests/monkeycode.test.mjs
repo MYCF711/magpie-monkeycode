@@ -1,3 +1,5 @@
+// 单测不许读开发机上的真实账号缓存（可能是「探测后全不可用 ⇒ 空表」）。
+process.env.MAGPIE_MONKEYCODE_CACHE_DIR = "C:\__magpie_test_cache__"
 // tests/monkeycode.test.mjs —— 协议语义锁（形状对、语义错的那几处）
 //
 // 覆盖：网关签名、prompt 提取优先级、凭据解析、cookie 归一、PoW 验证题、

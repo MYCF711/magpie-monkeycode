@@ -1,3 +1,5 @@
+// 单测不许读开发机上的真实账号缓存（可能是「探测后全不可用 ⇒ 空表」）。
+process.env.MAGPIE_MONKEYCODE_CACHE_DIR = "C:\__magpie_test_cache__"
 // tests/credential.test.mjs —— 凭据解析（一个 key 里塞两个字段的那类厂商）
 //
 // 锁三件事：三种输入形态、**不校验前缀**、以及「只有 session_cookie 也放行」。

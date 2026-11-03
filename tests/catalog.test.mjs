@@ -1,3 +1,5 @@
+// 单测不许读开发机上的真实账号缓存（可能是「探测后全不可用 ⇒ 空表」）。
+process.env.MAGPIE_MONKEYCODE_CACHE_DIR = "C:\__magpie_test_cache__"
 // MonkeyCode 平台目录：UUID 才是请求体里的 model，内置名字早过时了。
 import test from "node:test"
 import assert from "node:assert/strict"

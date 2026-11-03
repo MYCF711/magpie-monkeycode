@@ -1,3 +1,5 @@
+// 单测不许读开发机上的真实账号缓存（可能是「探测后全不可用 ⇒ 空表」）。
+process.env.MAGPIE_MONKEYCODE_CACHE_DIR = "C:\__magpie_test_cache__"
 // tests/oauth-pkce.test.mjs —— PKCE + 本机 loopback 回调
 //
 // 全部走真实 127.0.0.1 HTTP，不触外网；每个用例结束都关闭服务器，不留句柄。

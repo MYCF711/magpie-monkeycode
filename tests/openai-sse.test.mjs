@@ -1,3 +1,5 @@
+// 单测不许读开发机上的真实账号缓存（可能是「探测后全不可用 ⇒ 空表」）。
+process.env.MAGPIE_MONKEYCODE_CACHE_DIR = "C:\__magpie_test_cache__"
 // tests/openai-sse.test.mjs —— OpenAI 兼容 SSE 的解析 / 折叠
 //
 // 全部离线：用 ReadableStream 造帧，不触网络。

@@ -1,3 +1,5 @@
+// 单测不许读开发机上的真实账号缓存（可能是「探测后全不可用 ⇒ 空表」）。
+process.env.MAGPIE_MONKEYCODE_CACHE_DIR = "C:\__magpie_test_cache__"
 // tests/integration.test.mjs —— 走真实 HTTP 的端到端：插件 → 本地假网关。
 //
 // 为什么还要这一层：单元测试里 fetch 是被注入的，签名「按我们以为的方式」算出来

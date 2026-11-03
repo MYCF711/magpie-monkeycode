@@ -1,3 +1,5 @@
+// 单测不许读开发机上的真实账号缓存（可能是「探测后全不可用 ⇒ 空表」）。
+process.env.MAGPIE_MONKEYCODE_CACHE_DIR = "C:\__magpie_test_cache__"
 // tests/baizhi.test.mjs —— 百智云的语义锁。
 //
 // 与 MonkeyCode 的差别集中在这里：只认 x-api-key（无签名头）、模型目录有远端、

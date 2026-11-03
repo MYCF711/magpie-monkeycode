@@ -1,3 +1,5 @@
+// 单测不许读开发机上的真实账号缓存（可能是「探测后全不可用 ⇒ 空表」）。
+process.env.MAGPIE_MONKEYCODE_CACHE_DIR = "C:\__magpie_test_cache__"
 // tests/system-open.test.mjs —— 只有 http(s) 才交给系统浏览器
 import test from "node:test"
 import assert from "node:assert/strict"

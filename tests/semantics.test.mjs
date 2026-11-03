@@ -1,3 +1,5 @@
+// 单测不许读开发机上的真实账号缓存（可能是「探测后全不可用 ⇒ 空表」）。
+process.env.MAGPIE_MONKEYCODE_CACHE_DIR = "C:\__magpie_test_cache__"
 // tests/semantics.test.mjs —— 锁住「形状对、语义错」的那几处
 //
 // 为什么需要它：`scripts/check.mjs` 查的是**形状**（导出了什么、字段齐不齐、许可对不对）。

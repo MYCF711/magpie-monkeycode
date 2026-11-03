@@ -1,3 +1,5 @@
+// 单测不许读开发机上的真实账号缓存（可能是「探测后全不可用 ⇒ 空表」）。
+process.env.MAGPIE_MONKEYCODE_CACHE_DIR = "C:\__magpie_test_cache__"
 // tests/sso-import.test.mjs —— 「百智云账号 → MonkeyCode 账号」的账号选取逻辑。
 //
 // 不碰网络、不起浏览器：只验「读 magpie 账号库 → 挑出还没导过的那个」这条纯逻辑。

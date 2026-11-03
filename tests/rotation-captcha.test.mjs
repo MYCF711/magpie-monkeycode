@@ -1,3 +1,5 @@
+// 单测不许读开发机上的真实账号缓存（可能是「探测后全不可用 ⇒ 空表」）。
+process.env.MAGPIE_MONKEYCODE_CACHE_DIR = "C:\__magpie_test_cache__"
 // 旋转验证码：角度编码、WAF cookie 回传、取图/判角/提交重试
 import test from "node:test"
 import assert from "node:assert/strict"

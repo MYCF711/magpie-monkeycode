@@ -1,3 +1,5 @@
+// 单测不许读开发机上的真实账号缓存（可能是「探测后全不可用 ⇒ 空表」）。
+process.env.MAGPIE_MONKEYCODE_CACHE_DIR = "C:\__magpie_test_cache__"
 // tests/mount.test.mjs —— 单包多 Provider 的挂载契约
 //
 // magpie 会把入口里的每个函数导出都当成插件工厂，因此这里锁四件事：

@@ -498,6 +498,16 @@ export function makePlugin(site) {
           const auth = await getAuth()
           const credential = credentialOf(auth)
           if (credential === undefined) return { error: "未登录", windows: [] }
+          // 平台目录里一条能用的都没有 —— 这个号在平台侧就是空的（sub 没开/没进团队）。
+          // 卡片上直说原因，比让用户去猜「为什么模型列表是空的」强。
+          const catalog = readCatalog(site.id)
+          if (catalog !== undefined && catalog.models.length > 0 && catalog.models.every((model) => model.usable === false)) {
+            return {
+              error: `MonkeyCode 平台显示这个账号没有任何可用模型（${catalog.models.length} 条全部 403）`
+                + " —— 去平台开通额度 / 加入团队后再点重试",
+              windows: [],
+            }
+          }
           // 目录过期就后台刷一次（不 await：额度卡片的响应不能被目录拖慢）。
           if (isStale(readCatalog(site.id)) && credential.session_cookie !== undefined) {
             // 带上网关凭据：刷新时顺带探测「这个号到底能用哪些模型」。

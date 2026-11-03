@@ -28,9 +28,15 @@ import { join } from "node:path"
 /** 缓存多久算过期（毫秒）。 */
 export const CATALOG_TTL_MS = 6 * 60 * 60 * 1000
 
-/** 缓存文件位置（按 provider 分开：国内站与国际站的目录不同）。 */
+/**
+ * 缓存文件位置（按 provider 分开：国内站与国际站的目录不同）。
+ *
+ * `MAGPIE_MONKEYCODE_CACHE_DIR` 只给单测用 —— 否则测试会读到开发机上真实的
+ * 账号缓存（那里面可能是「探测后全不可用 ⇒ 空表」），断言就随机器状态飘。
+ */
 export function catalogPath(providerId) {
-  return join(homedir(), ".cache", "magpie", `monkeycode-models-${providerId}.json`)
+  const dir = process.env.MAGPIE_MONKEYCODE_CACHE_DIR ?? join(homedir(), ".cache", "magpie")
+  return join(dir, `monkeycode-models-${providerId}.json`)
 }
 
 /** 模型品牌的美化写法（平台给的是 `glm-5.3-flash` 这种小写串）。 */
@@ -187,9 +193,16 @@ export function readCatalog(providerId) {
   }
 }
 
-/** 缓存是否过期。 */
+/**
+ * 缓存是否过期。
+ *
+ * 除了时间，还看**探测过没有**：老缓存（0.2.13 之前写的）没有 `usable` 字段，
+ * 直接拿来用会把「点哪个都 403」的模型全列出来 —— 那种缓存视为过期，重探一次。
+ */
 export function isStale(catalog, now = Date.now()) {
-  return catalog === undefined || now - catalog.fetchedAt > CATALOG_TTL_MS
+  if (catalog === undefined) return true
+  if (!catalog.models.every((model) => typeof model.usable === "boolean")) return true
+  return now - catalog.fetchedAt > CATALOG_TTL_MS
 }
 
 
