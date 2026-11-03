@@ -244,8 +244,6 @@ async function signInWithBrowser(site, { fetchImpl, signal } = {}) {
       // 同一站第二次登录复用 profile（cookie 还在就不用再输账号密码）。
       profileDir: profileDirFor(site.id),
       timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
-      // 扫码之后那张「确认授权」页要有人点，否则会话建不起来。
-      onPoll: LOGIN_AUTOPILOT_JS,
       signal,
       async accept(candidate) {
         let result
@@ -395,8 +393,6 @@ export function makePlugin(site) {
                       cookieDomains: domains,
                       profileDir,
                       timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
-                      // 百智云登录页：自动点「其他登录方式」第 4 个（观猹）+ watcha 的「继续」。
-                      onPoll: AGREE_PROTOCOL_JS,
                       async accept() {
                         return true
                       },
@@ -418,8 +414,8 @@ export function makePlugin(site) {
                   ? `受控浏览器没能启动（${flowError || "未知原因"}）。已在你的默认浏览器打开 ${site.platformBaseUrl}，`
                     + "登录后回到这里点「重试」；或者改用「API Key」方式粘贴一行 JSON："
                     + '{"session_cookie":"sl-session=…; baizhi_session=…"}'
-                  : "在打开的窗口里登录你的百智云账号；登录完成后本页会自动开通 MonkeyCode。"
-                    + "登录过一次之后，另一站会直接复用这个登录态（同一 profile），不用再登。",
+                  : "在打开的窗口里登录你的百智云账号（登录方式自己挑，插件不会替你点）。"
+                    + "登录完成后本页会自动开通 MonkeyCode。",
                 method: "auto",
                 async callback() {
                   if (bail) {
@@ -542,7 +538,6 @@ export function makePlugin(site) {
                     // 关键：**不传 profileDir** → 一次性 profile，必须真的重新登/注册。
                     cookieNames: [site.sessionCookie],
                     timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
-                    onPoll: LOGIN_AUTOPILOT_JS,
                     async accept() {
                       return true
                     },

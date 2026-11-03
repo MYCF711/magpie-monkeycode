@@ -189,8 +189,6 @@ async function startBaizhiBrowserLogin(site, { signal, browser } = {}) {
     cookieNames: [...CONSOLE_COOKIES],
     cookieDomains: [...CONSOLE_DOMAINS],
     timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
-    // 登录页默认是微信扫码，但协议复选框不勾会静默失败 —— 替用户勾掉。
-    onPoll: AGREE_PROTOCOL_JS,
     signal,
     // 两枚到齐就算「读到登录态」；能不能换出 Key 由 finishSignIn 判。
     async accept() {
@@ -394,10 +392,10 @@ export function makeBaizhiPlugin(site = BAIZHI) {
                 url: site.loginUrl,
                 opened: true,
                 method: "auto",
-                instructions: "在打开的窗口里登录百智云。要用**观猹账号**的话："
-                  + "\n· 点页面下方「其他登录方式」里那个**微信图标** → 跳到 watcha.cn 的「观猹账号登录」"
-                  + "\n· 点「继续」授权（插件会自动点）→ 回到百智云，cookie 与 sk- 密钥自动取"
-                  + "\n⚠ 百智云没有自助注册入口：没有账号就先在观猹注册（watcha.cn），它是这类账号的身份源。",
+                instructions: "在打开的窗口里登录百智云 —— 入口都在，**自己挑**："
+                  + "\n· 上方大二维码 = 微信扫码"
+                  + "\n· 下方四个小图标 = 支付宝 / 抖音 / GitHub / 观猹"
+                  + "\n插件不会替你点任何登录方式，只负责在你登完之后读 cookie、取 sk- 密钥。",
                 async callback() {
                   try {
                     const { cookie } = await flow.wait()
@@ -446,7 +444,6 @@ export function makeBaizhiPlugin(site = BAIZHI) {
                     cookieNames: [...CONSOLE_COOKIES],
                     cookieDomains: [...CONSOLE_DOMAINS],
                     timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
-                    onPoll: AGREE_PROTOCOL_JS,
                     async accept() {
                       return true
                     },
