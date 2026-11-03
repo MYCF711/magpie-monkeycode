@@ -33,15 +33,16 @@ MonkeyCode（长亭科技）是面向工程团队的开源 AI 编程平台，托
 
 | 供应商 | 代表模型 | 上下文 | 计费方式 |
 |---|---|---|---|
-| MonkeyCode | `monkeycode-pro/deepseek-v4-pro` | 1,048,576 | 每日额度（pro 档） |
-| MonkeyCode | `monkeycode-basic/deepseek-flash` | 1,048,576 | 每日额度（basic 档） |
+| MonkeyCode | `monkeycode-pro-deepseek-v4-pro` | 1,048,576 | 每日额度（pro 档） |
+| MonkeyCode | `monkeycode-basic-deepseek-flash` | 1,048,576 | 每日额度（basic 档） |
 | MonkeyCode | `deepseek-v4-flash` | 1,048,576 | 直接扣积分 |
 | MonkeyCode | `glm-5` | 未声明 | 直接扣积分 |
 | 百智云 | `deepseek-v4-pro` | 1,048,576 | 按量计费（积分） |
 | 百智云 | `glm-5.1` / `kimi-k2.6` / `minimax-m2.7` | 未声明 | 按量计费（积分） |
 | 百智云 | `qwen3.6-plus` / `qwen-flash` | 未声明 | 按量计费（积分） |
 
-- MonkeyCode：带 `monkeycode-basic/` `monkeycode-pro/` `monkeycode-ultra/` 前缀的走对应档位的每日额度；不带前缀的直接扣积分。
+- MonkeyCode：id 里带 `monkeycode-basic` / `monkeycode-pro` / `monkeycode-ultra` 前缀的走对应档位的每日额度；不带前缀的直接扣积分。
+- 上游真实的模型 id 是带斜杠的（`monkeycode-basic/deepseek-flash`），插件用 `apiId` 保留它发请求，magpie 里看到的是压平后的 id —— 斜杠会被 magpie 读成「另一个供应商的模型」。
 - 上下文窗口只在**有实测证据**的模型上声明（服务端 400 原文写明 1,048,576）；其余不写 —— 宁可没有进度条，也不谎报一个会让 agent 推迟压缩的窗口。
 - 图片输入只给明确支持看图的模型（百智云：`deepseek-v4-flash-vision-exp`、`glm-5.1`、`kimi-k2.6`、`minimax-m2.7`、`qwen3.5-plus`）。
 

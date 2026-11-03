@@ -28,11 +28,13 @@ const MAX_OUTPUT = 64_000
 /** 把站点模型表编译成 magpie 的 config.models 形状。 */
 function configModels(site) {
   const out = {}
-  for (const [id, name, context] of site.models) {
+  for (const [id, name, context, apiId] of site.models) {
     out[id] = {
       id,
       name,
-      api: { id, url: site.gatewayBaseUrl, npm: SDK },
+      // 上游 id 与 magpie 的 id 不同时用 apiId 带上（发请求时用它）。
+      ...(apiId === undefined ? {} : { apiId }),
+      api: { id: apiId ?? id, url: site.gatewayBaseUrl, npm: SDK },
       status: "active",
       cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
       // context 为 0 = 厂商没有下发窗口，不编造（agent 据此决定何时压缩）。
@@ -116,16 +118,24 @@ async function signInWithBrowser(site, { fetchImpl, signal } = {}) {
   const issued = { credential: undefined }
   try {
     const { cookie } = await browserLogin({
-      url: `${site.platformBaseUrl}/`,
+      url: site.loginUrl ?? `${site.platformBaseUrl}/`,
       cookieName: site.sessionCookie,
       timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
       signal,
       async accept(candidate) {
-        const result = await exchangeSessionForKey(candidate, site, { fetchImpl })
+        let result
+        try {
+          result = await exchangeSessionForKey(candidate, site, { fetchImpl })
+        } catch (error) {
+          // 网络层抛错（DNS / 超时 / 证书）不是「凭据坏了」：国际站实测单次
+          // 请求要 11s 以上，偶发超时很正常。继续等窗口里的下一次轮询。
+          return false
+        }
         if (!result.ok) {
           // 401/403 = 用户还没登进去（窗口一打开就有匿名会话），继续等。
-          // 其余失败（网络 / 上游改版）才抛。
+          // 网络超时同理（国际站慢）—— 只有「确实通了的接口拒绝了报文形态」才抛。
           if (/HTTP 40[13]/.test(result.error) || result.error.includes("网页登录态未生效")) return false
+          if (result.error.includes("平台接口请求失败")) return false
           throw new Error(`MonkeyCode：已读到网页登录态，但换取网关凭据失败（${result.error}）`)
         }
         issued.credential = {
@@ -220,8 +230,8 @@ export function makePlugin(site) {
              */
             async authorize() {
               return {
-                url: `${site.platformBaseUrl}/`,
-                instructions: "在打开的窗口里登录 MonkeyCode；登录完成后本页会自动继续。",
+                url: site.loginUrl ?? `${site.platformBaseUrl}/`,
+                instructions: "在打开的窗口里登录 MonkeyCode（可以用「百智云登录」）；登录完成后本页会自动继续。",
                 method: "auto",
                 opened: true,
                 async callback() {

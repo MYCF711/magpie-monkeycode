@@ -120,17 +120,24 @@ async function signInWithBrowser(site, { fetchImpl, signal } = {}) {
   let cookie = undefined
   try {
     await browserLogin({
-      url: `${site.consoleBaseUrl}/console/keys`,
+      url: site.loginUrl,
       cookieName: site.sessionCookie,
       timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
       signal,
       async accept(candidate) {
-        const exchanged = await exchangeSessionForKey(candidate, site, { fetchImpl })
+        let exchanged
+        try {
+          exchanged = await exchangeSessionForKey(candidate, site, { fetchImpl })
+        } catch (error) {
+          // 网络层抛错（DNS / 超时 / 证书）继续等，不是「登录坏了」。
+          return false
+        }
         if (!exchanged.ok) {
           // 401/403 = 还没登进去（窗口一开就有匿名 cookie），继续等；
-          // 「没有可用的 sk- 密钥」则是登录成功但用户还没建 Key —— 必须抛，
-          // 否则会一直空转到超时，用户完全不知道要去建一把。
+          // 网络超时同理；「没有可用的 sk- 密钥」则是登录成功但用户还没建 Key ——
+          // 必须抛，否则会一直空转到超时，用户完全不知道要去建一把。
           if (/HTTP 40[13]/.test(exchanged.error) || exchanged.error.includes("网页登录态未生效")) return false
+          if (exchanged.error.includes("平台接口请求失败")) return false
           throw new Error(exchanged.error)
         }
         issued.key = exchanged.apiKey
@@ -224,8 +231,8 @@ export function makeBaizhiPlugin(site = BAIZHI) {
             label: `${site.displayName} 浏览器登录`,
             async authorize() {
               return {
-                url: `${site.consoleBaseUrl}/console/keys`,
-                instructions: "在打开的窗口里登录百智云；登录完成后本页会自动继续（账号下需要有可用的 sk- 密钥）。",
+                url: site.loginUrl,
+                instructions: "在打开的窗口里登录百智云控制台；登录完成后本页会自动继续（账号下需要有可用的 sk- 密钥）。",
                 method: "auto",
                 opened: true,
                 async callback() {

@@ -78,6 +78,20 @@ oma_…                                             裸 token（缺密钥，请�
 
 解析层**不校验前缀**（`oma_` 不是白名单），只要求 token 形状 `^[A-Za-z0-9_.\-/+=]{16,}$` —— 上游将来换前缀时，写死前缀会把新 Key 直接判成「凭据不完整」。
 
+### 登录页
+
+两家的登录窗口都直接开各自的 `/login`，而不是首页或商场的深链：
+
+- MonkeyCode：`https://monkeycode-ai.com/login`（登录方式默认就是「百智云登录 - 推荐」）；
+- 百智云：`https://baizhi.cloud/console/login`。
+
+⚠ 开 `ai-models.app.baizhi.cloud/console/keys` 会得到一片空白 +「登录状态已失效」——
+那个 SPA 拿不到平台登录态时会 `location.replace("/")` 再渲染失败页，它**没有登录入口**。
+
+⚠ 换凭据的超时是 30 秒：国际站实测单次请求 11 秒以上，10 秒会在登录窗口里
+反复误判成「换凭据失败」。网络层失败（超时 / DNS）在等待循环里**继续等**，只有
+「接口通了但报文被拒」才抛。
+
 ### 续期
 
 **没有。** `auth.refresh` 恒返回 `undefined`，不发任何网络请求。凭据是长期静态材料，上游没有 refresh 端点；写一个「每 30 分钟刷新一次」只会制造一串注定失败的请求，并在面板上制造「续期失败」的假故障。
@@ -140,7 +154,14 @@ POST /api/v1/users/wallet/checkin {captcha_token}
 
 网关没有远端目录（`GET /v1/models` → 405），所以目录只有内置快照（来源：平台侧 `GET /api/v1/users/models` 的快照）。
 
-- 带 `monkeycode-basic/` `pro/` `ultra/` 前缀的走对应档位的**每日额度**；basic 账号请求 pro/ultra 前缀会被 403。
+⚠ **模型 id 里不能有 `/`**（2026-11-03 真机踩到）：magpie 把 `<a>/<b>` 读成「provider a 的模型 b」，
+于是上游的 `monkeycode-basic/deepseek-flash` 会让网关里凭空出现 `monkeycode-basic`、`monkeycode-pro`、
+`monkeycode-ultra` 三个不存在的供应商，卡片提示「已登录，但 magpie 无法列出它」。
+
+所以 magpie 侧的 id 用连字符压平（`monkeycode-basic-deepseek-flash`），上游真实 id 放 `apiId`，
+由它决定请求体里的 `model`。`tests/multi-provider.test.mjs` 里有断言锁住这条。
+
+- id 带 `monkeycode-basic` / `monkeycode-pro` / `monkeycode-ultra` 前缀的走对应档位的**每日额度**；basic 账号请求 pro/ultra 前缀会被 403。
 - 不带前缀的直接扣积分。
 - 上下文窗口只在**有实测证据**的 DeepSeek 系上声明 `1,048,576`（服务端 400 原文：`maximum context length is 1048576 tokens`）。`glm-5` 未实测，就不声明 —— 这个字段会被 agent 拿去算压缩阈值，谎报比缺一条进度条代价大得多。
 - 不声明 `reasoning` 档位：MonkeyCode 没有下发「每个模型支持哪些思考档位」的元数据，编一张表就是假能力。

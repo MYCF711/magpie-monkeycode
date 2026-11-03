@@ -24,13 +24,23 @@ import { MONKEYCODE_ICON } from "./monkeycode-icon.mjs"
 // 未知就省略，省略比谎报更安全（窗口会被 agent 拿去算压缩阈值）。
 const DEEPSEEK_CONTEXT = 1_048_576
 
-/** [id, 显示名, 上下文窗口（undefined = 不声明）, 思考档位] */
+/**
+ * [magpie 的 id, 显示名, 上下文窗口（undefined = 不声明）, 上游 id（与 id 不同时才写）]
+ *
+ * ⚠ **magpie 的模型 id 里不能出现 `/`**（2026-11-03 真机踩到）：magpie 把
+ * `<a>/<b>` 读成「provider a 的模型 b」，于是 `monkeycode-basic/deepseek-flash`
+ * 这类上游 id 会凭空长出 `monkeycode-basic` / `monkeycode-pro` / `monkeycode-ultra`
+ * 三个不存在的供应商，卡片的模型列表整个对不上（界面提示「已登录，但 magpie
+ * 无法列出它」）。
+ *
+ * 所以 magpie 里用连字符压平的 id，上游真实 id 交给 `apiId` —— 发请求时用它。
+ */
 const MODELS = [
-  ["monkeycode-basic/deepseek-flash", "DeepSeek Flash（basic 额度）", DEEPSEEK_CONTEXT],
-  ["monkeycode-basic/deepseek-v4-flash", "DeepSeek V4 Flash（basic 额度）", DEEPSEEK_CONTEXT],
-  ["monkeycode-pro/deepseek-flash", "DeepSeek Flash（pro 额度）", DEEPSEEK_CONTEXT],
-  ["monkeycode-pro/deepseek-v4-pro", "DeepSeek V4 Pro（pro 额度）", DEEPSEEK_CONTEXT],
-  ["monkeycode-ultra/deepseek-v4-pro", "DeepSeek V4 Pro（ultra 额度）", DEEPSEEK_CONTEXT],
+  ["monkeycode-basic-deepseek-flash", "DeepSeek Flash（basic 额度）", DEEPSEEK_CONTEXT, "monkeycode-basic/deepseek-flash"],
+  ["monkeycode-basic-deepseek-v4-flash", "DeepSeek V4 Flash（basic 额度）", DEEPSEEK_CONTEXT, "monkeycode-basic/deepseek-v4-flash"],
+  ["monkeycode-pro-deepseek-flash", "DeepSeek Flash（pro 额度）", DEEPSEEK_CONTEXT, "monkeycode-pro/deepseek-flash"],
+  ["monkeycode-pro-deepseek-v4-pro", "DeepSeek V4 Pro（pro 额度）", DEEPSEEK_CONTEXT, "monkeycode-pro/deepseek-v4-pro"],
+  ["monkeycode-ultra-deepseek-v4-pro", "DeepSeek V4 Pro（ultra 额度）", DEEPSEEK_CONTEXT, "monkeycode-ultra/deepseek-v4-pro"],
   ["deepseek-flash", "DeepSeek Flash（按积分计费）", DEEPSEEK_CONTEXT],
   ["deepseek-v4-flash", "DeepSeek V4 Flash（按积分计费）", DEEPSEEK_CONTEXT],
   ["deepseek-v4-pro", "DeepSeek V4 Pro（按积分计费）", DEEPSEEK_CONTEXT],
@@ -49,6 +59,11 @@ export const SITES = Object.freeze({
     gatewayBaseUrl: "https://proxy.monkeycode-ai.com/v1",
     /** 平台站 base —— 额度 / 签到 / 换 Key 都在这边。 */
     platformBaseUrl: "https://monkeycode-ai.com",
+    /**
+     * 登录页。登录方式里默认就是「百智云登录 - 推荐」（两家是同一账号体系）。
+     * 直接开首页会让人在窗口里自己找登录按钮 —— 开登录页少一步。
+     */
+    loginUrl: "https://monkeycode-ai.com/login",
     /** 网页会话 cookie 名（HttpOnly，只能从浏览器读）。 */
     sessionCookie: "monkeycode_ai_session",
     icon: MONKEYCODE_ICON,
@@ -60,6 +75,7 @@ export const SITES = Object.freeze({
     displayName: "MonkeyCode 国际版",
     gatewayBaseUrl: "https://proxy.monkeycode-ai.net/v1",
     platformBaseUrl: "https://monkeycode-ai.net",
+    loginUrl: "https://monkeycode-ai.net/login",
     sessionCookie: "monkeycode_ai_session",
     icon: MONKEYCODE_ICON,
     models: MODELS,

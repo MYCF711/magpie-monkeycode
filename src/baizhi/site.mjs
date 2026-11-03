@@ -77,6 +77,14 @@ export const BAIZHI = Object.freeze({
   consoleApiKeysPath: "/api/console/api-keys",
   /** 控制台（余额、资料、用量）。 */
   platformBaseUrl: "https://baizhi.cloud",
+  /**
+   * 登录页在**主站**，不是大模型商店。
+   *
+   * ⚠ 直接开 `ai-models.app.baizhi.cloud/console/keys` 会得到一片空白 +
+   * 「登录状态已失效」：那个 SPA 拿不到平台登录态时会 `location.replace("/")`
+   * 然后渲染失败页 —— 它没有登录入口，用户会以为账号坏了。
+   */
+  loginUrl: "https://baizhi.cloud/console/login",
   walletBalancePath: "/api/v1/user/wallet/balance",
   walletUsagePath: "/api/v1/user/wallet/app-credit-usage",
   profilePath: "/api/v1/user/profile",

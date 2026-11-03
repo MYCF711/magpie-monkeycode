@@ -48,6 +48,24 @@ test("三个插件各自只注册自己的 provider", async () => {
   assert.equal(Object.keys(cfg.provider.baizhi.models).length, 15)
 })
 
+test("模型 id 里不许有斜杠：magpie 会把 <a>/<b> 读成「provider a 的模型 b」", async () => {
+  const cfg = { provider: {} }
+  for (const factory of [entry.MonkeyCodeAuthPlugin, entry.MonkeyCodeIntlAuthPlugin, entry.BaizhiAuthPlugin]) {
+    await (await factory({ client: {} })).config(cfg)
+  }
+  for (const [providerId, provider] of Object.entries(cfg.provider)) {
+    for (const [modelId, model] of Object.entries(provider.models)) {
+      assert.ok(!modelId.includes("/"), `${providerId}/${modelId} 的 id 含斜杠，会被 magpie 拆成幽灵 provider`)
+      assert.equal(model.id, modelId, `${providerId}/${modelId}: id 字段要与键一致`)
+      // 带 apiId 的模型：api.id 必须指回上游真实 id（带斜杠的那个）。
+      if (model.apiId !== undefined) {
+        assert.match(model.apiId, /\//, `${providerId}/${modelId}: apiId 应是上游的真实 id`)
+        assert.equal(model.api.id, model.apiId)
+      }
+    }
+  }
+})
+
 test("两区共享协议，差异只留在站点适配器", async () => {
   assert.equal(typeof _internal.makePlugin, "function")
   assert.equal(typeof _internal.configModels, "function")

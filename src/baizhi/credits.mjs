@@ -90,7 +90,7 @@ export async function fetchUsage(cookie, site, { period = "month", fetchImpl = f
  * ⚠ 字段是 `api_key`（下划线），不是控制台的 `key`；控制台那条路径只发 `bzy_`，
  * 拿它打网关恒 401。一个账号可以有多把 Key：取第一把 `status === "active"` 的。
  */
-export async function exchangeSessionForKey(cookie, site, { fetchImpl = fetch, timeoutMs = 10_000 } = {}) {
+export async function exchangeSessionForKey(cookie, site, { fetchImpl = fetch, timeoutMs = 30_000 } = {}) {
   const normalized = cookieOf({ session_cookie: cookie }, site.sessionCookies, site.sessionCookie)
   if (normalized === undefined) return { ok: false, error: "网页登录态为空" }
   const result = await platformRequest(
@@ -115,7 +115,7 @@ export async function exchangeSessionForKey(cookie, site, { fetchImpl = fetch, t
 }
 
 /** 控制台用户资料：`GET /api/v1/user/profile` → `{ id, name }`。 */
-export async function fetchProfile(cookie, site, { fetchImpl = fetch, timeoutMs = 10_000 } = {}) {
+export async function fetchProfile(cookie, site, { fetchImpl = fetch, timeoutMs = 30_000 } = {}) {
   const normalized = cookieOf({ session_cookie: cookie }, site.sessionCookies, site.sessionCookie)
   if (normalized === undefined) return undefined
   const result = await platformRequest(

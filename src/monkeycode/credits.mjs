@@ -62,7 +62,7 @@ export { describeFailure, platformRequest, unwrapEnvelope }
  *
  * ⚠ 兑换每次都签发新的一对（上游没有幂等键），只在登录流程里调一次。
  */
-export async function exchangeSessionForKey(cookie, site, { fetchImpl = fetch, timeoutMs = 10_000 } = {}) {
+export async function exchangeSessionForKey(cookie, site, { fetchImpl = fetch, timeoutMs = 30_000 } = {}) {
   const normalized = normalizeCookie(cookie, site.sessionCookie)
   if (normalized === undefined) return { ok: false, error: "未提供网页会话 cookie" }
   const response = await platformRequest(
@@ -88,7 +88,7 @@ export async function exchangeSessionForKey(cookie, site, { fetchImpl = fetch, t
  * ⚠ 这是**稳定账号身份**的唯一来源（浏览器登录判重靠它）。失败不抛错：
  * 调用方拿到 undefined 时按「身份未知」处理，不能让一次辅助读数把登录判死。
  */
-export async function fetchProfile(cookie, site, { fetchImpl = fetch, timeoutMs = 10_000 } = {}) {
+export async function fetchProfile(cookie, site, { fetchImpl = fetch, timeoutMs = 30_000 } = {}) {
   const normalized = normalizeCookie(cookie, site.sessionCookie)
   if (normalized === undefined) return undefined
   const response = await platformRequest(
