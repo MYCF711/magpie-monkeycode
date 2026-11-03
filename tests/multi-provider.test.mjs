@@ -47,7 +47,9 @@ test("三个插件各自只注册自己的 provider", async () => {
   assert.equal(cfg.provider.monkeycode.api, "https://proxy.monkeycode-ai.com/v1")
   assert.equal(cfg.provider.monkeycodeintl.api, "https://proxy.monkeycode-ai.net/v1")
   assert.equal(cfg.provider.baizhi.api, "https://ai-models.app.baizhi.cloud/api/anthropic/v1")
-  assert.equal(Object.keys(cfg.provider.monkeycode.models).length, 9)
+  // 模型数取决于「平台目录缓存有没有落盘」：内置快照 9 条是兜底，
+  // 登录后拉到的真实目录（21 条）优先。这里只要求非空、且不写死数字。
+  assert.ok(Object.keys(cfg.provider.monkeycode.models).length >= 9)
   assert.equal(Object.keys(cfg.provider.baizhi.models).length, 15)
 })
 
@@ -60,9 +62,10 @@ test("模型 id 里不许有斜杠：magpie 会把 <a>/<b> 读成「provider a �
     for (const [modelId, model] of Object.entries(provider.models)) {
       assert.ok(!modelId.includes("/"), `${providerId}/${modelId} 的 id 含斜杠，会被 magpie 拆成幽灵 provider`)
       assert.equal(model.id, modelId, `${providerId}/${modelId}: id 字段要与键一致`)
-      // 带 apiId 的模型：api.id 必须指回上游真实 id（带斜杠的那个）。
+      // 带 apiId 的模型：api.id 必须指回上游真实 id（MonkeyCode 是设备 UUID，
+      // 百智云的远端目录是带斜杠的命名空间）。判据只看「指回去了」。
       if (model.apiId !== undefined) {
-        assert.match(model.apiId, /\//, `${providerId}/${modelId}: apiId 应是上游的真实 id`)
+        assert.ok(model.apiId.length > 0, `${providerId}/${modelId}: apiId 不能为空`)
         assert.equal(model.api.id, model.apiId)
       }
     }

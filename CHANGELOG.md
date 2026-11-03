@@ -3,6 +3,16 @@
 > 每个版本一节，**一条一行**，说用户能感知的变化。
 > 格式与规矩见 [UPDATING.md](./UPDATING.md)。
 
+## 0.2.10 — 2026-11-04
+
+**MonkeyCode 的模型目录改成「平台实时下发 + 本地缓存」—— 内置快照是错的**
+
+- 实测 `GET /api/v1/users/models`（cookie 认证）返回 45 条，**请求体里的 `model` 是 UUID**；用 `deepseek-v4-pro` 这种名字打网关会回「模型不存在或无权访问」（502）
+- 上下文是 **200000**，不是早先记的 1M；`is_hidden: true` 的 20 条是内部/未上架，不该显示
+- 新增 `src/monkeycode/catalog.mjs`：拉取（后台）→ 落盘 `~/.cache/magpie/monkeycode-models-<provider>.json` → `config.models` / `provider.models` **只读缓存、零网络**（登录那一刻不许有网络开销，否则就是「已登录但无法列出」）
+- SSO 开通成功后顺手拉一次目录；`auth.usage` 里缓存超过 6 小时则后台刷新
+- 内置 9 条降级为纯兜底（平台目录拉不到时才用）
+
 ## 0.2.9 — 2026-11-04
 
 **修「已登录，但 magpie 无法列出它」的真正原因：`provider.models` 里有网络请求**

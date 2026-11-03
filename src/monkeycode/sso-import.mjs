@@ -36,6 +36,7 @@ import { tmpdir } from "node:os"
 
 import { findBrowser } from "../browser-login.mjs"
 import { exchangeSessionForKey, fetchProfile } from "./credits.mjs"
+import { refreshCatalog } from "./catalog.mjs"
 import { parseCredential } from "../credential.mjs"
 
 /** magpie 的账号库位置（Windows / macOS / Linux 同一套约定）。 */
@@ -211,27 +212,53 @@ async function openPage(url) {
 export async function signInWithBaizhiSession(baizhiCookie, site, { fetchImpl = fetch, timeoutMs = 120_000 } = {}) {
   const { ws, close } = await openPage("about:blank")
   try {
-    // 把百智云的会话塞进这个一次性浏览器（domain 用 host-only 即可：
-    // 授权页在 baizhi.cloud 自己身上）。
-    const value = baizhiCookie.replace(/^baizhi_session=/, "")
-    await cdpSend(ws, 10, "Network.setCookie", {
-      name: "baizhi_session",
-      value,
-      domain: "baizhi.cloud",
-      path: "/",
-      secure: true,
-      httpOnly: true,
-      sameSite: "Lax",
-    })
+    // 把百智云的**每一枚** cookie 都塞进这个一次性浏览器。
+    //
+    // ⚠ 不能只设 baizhi_session：控制台同时要 sl-session（设备/风控），
+    // 只带一枚时 /api/v1/user/profile 回 401。
+    // ⚠ 用 `url` 而不是 `domain`：用 domain 时 CDP 会做一遍 sanitize，
+    // 含 `/` 和 `==` 的 sl-session 值会被判 "Sanitizing cookie failed"。
+    let cookieId = 10
+    for (const pair of baizhiCookie.split(";")) {
+      const trimmed = pair.trim()
+      if (trimmed.length === 0) continue
+      const eq = trimmed.indexOf("=")
+      if (eq <= 0) continue
+      const name = trimmed.slice(0, eq).trim()
+      const value = trimmed.slice(eq + 1)
+      if (name.length === 0 || value.length === 0) continue
+      await cdpSend(ws, cookieId++, "Network.setCookie", {
+        name,
+        value,
+        url: "https://baizhi.cloud/",
+        path: "/",
+        secure: true,
+        httpOnly: true,
+        sameSite: "Lax",
+      })
+    }
 
     // 登录入口自己会 302 到百智云的授权页，再 302 回 callback。
     await cdpSend(ws, 11, "Page.navigate", { url: `${site.platformBaseUrl}/api/v1/users/login` })
 
     const deadline = Date.now() + timeoutMs
     let cookieHeader
+    let tick = 500
     while (Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 1_000))
-      const { cookies } = await cdpSend(ws, Date.now() % 1_000_000, "Network.getAllCookies")
+      // 百智云的 OAuth 授权页是一张**确认页**（「OAuth 授权确认 · 确认授权 / 取消」），
+      // 不会自己跳过去。用 CDP 点掉它 —— 这一步正是「复用本机账号」和「再登一次」的区别。
+      await cdpSend(ws, tick++, "Runtime.evaluate", {
+        returnByValue: true,
+        expression: `(() => {
+          const btn = [...document.querySelectorAll('button,a,[role=button]')]
+            .find((el) => /确认授权|同意授权|允许授权|^授权$/.test(((el.textContent || '') + '').trim()));
+          if (!btn) return 'none';
+          btn.click();
+          return 'clicked';
+        })()`,
+      }).catch(() => {})
+      const { cookies } = await cdpSend(ws, tick++, "Network.getAllCookies")
       const session = (cookies ?? []).find((cookie) => cookie.name === site.sessionCookie && cookie.value)
       if (session) {
         cookieHeader = `${session.name}=${session.value}`
@@ -243,6 +270,8 @@ export async function signInWithBaizhiSession(baizhiCookie, site, { fetchImpl = 
     const issued = await exchangeSessionForKey(cookieHeader, site, { fetchImpl, timeoutMs: 30_000 })
     if (!issued.ok) throw new Error(`已拿到 MonkeyCode 会话，但换取网关凭据失败（${issued.error}）`)
     const profile = await fetchProfile(cookieHeader, site, { fetchImpl, timeoutMs: 30_000 })
+    // 顺手把平台目录拉一次落盘：模型 id 是平台下发的 UUID，内置快照早就对不上了。
+    await refreshCatalog(cookieHeader, site, { fetchImpl }).catch(() => {})
     return {
       credential: {
         access_token: issued.apiKey,

@@ -20,6 +20,7 @@ import { browserLogin, BROWSER_LOGIN_TIMEOUT_MS } from "./browser-login.mjs"
 import { profileDirFor, readCookiesSilently, startBrowserLogin } from "../session-login.mjs"
 import { findBrowser } from "../browser-login.mjs"
 import { importOneBaizhiAccount, signInWithBaizhiSession } from "./sso-import.mjs"
+import { isStale, readCatalog, refreshCatalog } from "./catalog.mjs"
 import {
   claimCheckin, cookieOf, exchangeSessionForKey, fetchPlan, fetchProfile, fetchWallet, PLAN_LABELS,
 } from "./credits.mjs"
@@ -28,8 +29,48 @@ import { gatewayHeaders, isUsableCredential, parseCredential } from "./signing.m
 const SDK = "@ai-sdk/anthropic"
 const MAX_OUTPUT = 64_000
 
-/** 把站点模型表编译成 magpie 的 config.models 形状。 */
+/**
+ * 模型目录：**优先用平台下发的缓存**，没有才用内置快照。
+ *
+ * 缓存由登录后的后台刷新写入（见 auth.usage 与 signInWithSso）—— 这里只读文件，
+ * 绝不发网络请求：magpie 会在登录刚完成时调这个函数，任何网络开销都会变成
+ * 「已登录但无法列出它」。
+ */
 function configModels(site) {
+  const cached = readCatalog(site.id)
+  if (cached !== undefined && cached.models.length > 0) {
+    const out = {}
+    for (const model of cached.models) {
+      out[model.id] = {
+        id: model.id,
+        name: model.name,
+        apiId: model.apiId,
+        api: { id: model.apiId, url: site.gatewayBaseUrl, npm: SDK },
+        status: "active",
+        cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+        limit: { context: model.context || 0, output: model.output || MAX_OUTPUT },
+        modalities: { input: model.image ? ["text", "image"] : ["text"], output: ["text"] },
+        capabilities: {
+          temperature: true,
+          reasoning: false,
+          toolcall: true,
+          attachment: model.image === true,
+          input: { text: true, image: model.image === true, audio: false, video: false, pdf: false },
+          output: { text: true, image: false, audio: false, video: false, pdf: false },
+          interleaved: false,
+        },
+        release_date: "",
+        variants: {},
+        ...(model.free ? { free: true } : {}),
+      }
+    }
+    return out
+  }
+  return builtinModels(site)
+}
+
+/** 内置快照（平台目录拉不到时的兜底；名字与窗口都来自旧快照，可能过期）。 */
+function builtinModels(site) {
   const out = {}
   for (const [id, name, context, apiId] of site.models) {
     out[id] = {
@@ -430,6 +471,10 @@ export function makePlugin(site) {
           const auth = await getAuth()
           const credential = credentialOf(auth)
           if (credential === undefined) return { error: "未登录", windows: [] }
+          // 目录过期就后台刷一次（不 await：额度卡片的响应不能被目录拖慢）。
+          if (isStale(readCatalog(site.id)) && credential.session_cookie !== undefined) {
+            refreshCatalog(credential.session_cookie, site).catch(() => {})
+          }
           const key = credential.user_id ?? credential.access_token
           try {
             return await usageCache.read(`${site.id}\n${key}`, () => readUsage(site, credential))
