@@ -221,9 +221,15 @@ async function signInWithBrowser(site, { fetchImpl, signal } = {}) {
     if (process.env.MAGPIE_PLUGIN_DISABLE_BROWSER === "1") {
       return { type: "failed", error: "受控浏览器未启动（测试环境）" }
     }
+    // 只认**本站**的 cookie。两站用的是同一个 cookie 名（`monkeycode_ai_session`），
+    // 不过滤域就会把另一站的会话当成自己的 —— 实测拿国内站的 cookie 打国际站的
+    // `/api/v1/users/models` 一律 **401**（AGENTS 0.6）。
+    // 这也是「国际版已登录、但列不出来」的最短路径根因之一。
+    const host = new URL(site.platformBaseUrl).hostname
     const { cookie } = await browserLogin({
       url: site.loginUrl ?? `${site.platformBaseUrl}/`,
       cookieName: site.sessionCookie,
+      cookieDomains: [host],
       // ⚠ **一次性 profile**（刻意不传 profileDir）：复用持久 profile 时，
       // 窗口一开就带着上一个号的登录态，读到的还是旧身份 —— magpie 按 uid
       // 去重后列表不变，用户看到的是「提示已添加，账号还是那一个」。

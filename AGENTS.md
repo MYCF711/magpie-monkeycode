@@ -7,6 +7,155 @@
 
 ---
 
+## 零、本仓库的产品规格（七条，优先级高于本文其余部分）
+
+> 这一节是**用户直接下达的验收标准**，不是建议。任何改动如果让下面任一条退化，
+> 就算 `check.mjs` 全绿、测试全过，也是**不合格**。
+>
+> 每条都给了「判据」—— 能当场跑出来的命令或能直接看的字段。写不出判据的改动不要提交。
+
+### 0.1 登录一律走 API 接口，不靠开窗
+
+**要什么**：拿登录态、换凭据、查额度，全部通过平台 HTTP API 完成。浏览器只在
+「API 走不通、必须人肉过验证码」时作为**最后退路**，且用完即弃。
+
+**为什么**：开窗 = 用户要盯着、可能卡住、可能被风控、CI 里跑不了。桌面客户端已经把
+这条路走通了 —— 它自己就是调 API，我们把同一批端点拿来即可。
+
+**已知端点**（2026-11-04 从 `monkeycode-desktop.exe` 的符号表与 `.rodata` 提取，
+宿主站 `monkeycode-ai.com`，全部以 `Cookie` 认证）：
+
+| 用途 | 端点 | 备注 |
+|---|---|---|
+| 账号密码登录 | `POST /api/v1/users/password-login` | 桌面命令 `mc_password_login` 对应；body 字段名仍待定（见 0.4） |
+| 网页登录（内嵌 WebView） | 命令 `mc_web_login` / `mc_web_login_cancel` | 桌面用 WebView2 完成，等价于我们的受控浏览器 |
+| 微信扫码 | 命令 `baizhi_wechat_start` / `baizhi_wechat_poll` | start 取二维码、poll 轮询结果 —— **纯 API，可无窗完成** |
+| 当前用户 | `GET /api/v1/users/status` | 返回 `data.user.{id,name}`（是 `name` 不是 `nickname`） |
+| 钱包 | `GET /api/v1/users/wallet` | `daily_token_balance` / `daily_token_limit` / `balance` |
+| 订阅 | `GET /api/v1/users/subscription` | Basic / Pro / Ultra |
+| 模型目录 | `GET /api/v1/users/models` | 请求体里的 `model` 用 `model` 字段值，**不是** UUID（UUID 回 403） |
+| 网关密钥 | `POST /api/v1/users/ohmyagent/api-keys` | 返回 `{api_key, signing_secret}` |
+| 签到 | `GET/POST /api/v1/users/wallet/checkin` | 已签过不重复发写请求 |
+| 登出 | `GET /api/v1/users/logout` 或桌面 `mc_logout` | |
+
+**判据**：`curl` 能复现。例：
+
+```bash
+curl -s -H "Cookie: monkeycode_ai_session=<session>" https://monkeycode-ai.com/api/v1/users/models | head -c 200
+# 必须 200 且返回 {"code":0,..."models":[...]}
+```
+
+### 0.2 隔离浏览器的隔离凭据登录
+
+**要什么**：真的需要开窗时，用**一次性 `user-data-dir`**，不碰用户日常浏览器配置；
+每次点「浏览器登录」都是干净窗口，拿到的是**这一次登录**的会话。
+
+**为什么**：复用持久 profile 会在窗口里带上一个号的登录态 —— 用户什么都没做就「成功」，
+读到的还是旧 cookie；magpie 按 uid 去重，于是「提示已添加、列表没变」。
+
+**判据**：连点两次「浏览器登录」，两次的 `--user-data-dir` 必须不同（插件日志或
+`%TEMP%\magpie-*` 目录可查）；第二个号能成功进入列表。
+
+### 0.3 本机桌面登录态复用
+
+**要什么**：装过 MonkeyCode 桌面客户端且登录过，插件就直接复用它的会话 ——
+不开窗、不扫码、不用重输密码。
+
+**数据位置**（Tauri + WebView2，**明文 JSON**，不需要 DPAPI）：
+
+```
+%APPDATA%\com.chaitin.baizhi.monkeycode\
+├── monkeycode-cookies.json      → monkeycode_ai_session（有效期约 7 天）
+├── baizhi-cookies.json          → sl-session × 3 个域 + baizhi_session
+└── monkeycode-ohmyagent-key.json → oma_… + signing_secret + base_url
+```
+
+实现：`src/monkeycode/desktop-session.mjs` 的 `readDesktopMonkeyCodeSession()` /
+`readDesktopBaizhiSession()`。**两个 provider 共用这一个读法**。
+
+**判据**：
+
+```bash
+node -e 'import("./src/monkeycode/desktop-session.mjs").then(m=>console.log(!!m.readDesktopMonkeyCodeSession(), !!m.readDesktopBaizhiSession()))'
+# 两个都 true = 本机有可复用登录态
+```
+
+### 0.4 五种登录方式都必须能在 web 登录时捕获登录态与对应 Key
+
+**要什么**：百智云登录页列出的每一种方式 —— **微信扫码 / 支付宝 / 抖音 / GitHub / 观猹**
+（外加账号密码）—— 用户选哪一种都行；插件在**登录完成的瞬间**捕获会话，并换出
+**该方式对应账号**的 Key。不允许「只有某一种方式能用」。
+
+**为什么**：登录方式是用户的自由，不是插件的选择。任何一种方式登完，服务端下发的
+都是同一套 cookie（`sl-session` + `baizhi_session`），所以**捕获逻辑必须与登录方式无关**。
+
+**做法**：轮询 CDP 的 cookie + 反复试换 Key，直到成功（而不是「读到 cookie 就算成功」）。
+窗口一开就有匿名 cookie，这是最容易踩的坑。
+
+**判据**：每种方式登完后，`finishSignIn` / `exchangeSessionForKey` 都返回 `ok: true`，
+且 `accountId` 是**这一次登录的账号**（不是上一次的）。
+
+### 0.5 可共享的登录态必须共享（对齐华为云双供应商）
+
+**要什么**：一个百智云账号能同时喂给 `monkeycode` 与 `baizhi` 两个 provider ——
+像华为云国际站/国内站那样**一份身份两处通用**，不要用户登两次。
+
+**为什么**：`baizhi_session` 本来就是百智云的身份；MonkeyCode 的 SSO 也是拿它换
+MonkeyCode 会话。同源凭据不该让用户凑两遍。
+
+**做法**：桌面导入（0.3）一次读到百智云会话后，两个 provider 各自点一次导入即可；
+SSO 路径（`signInWithBaizhiSession`）保持可用。
+
+**判据**：同一次登录后 `plugin-providers.json` 里 `monkeycode.uid` 与 `baizhi.uid`
+指向同一账号（`观猹员 NNNN` 一致），且两家 `signedIn` 都为真。
+
+### 0.6 桌面端还有国际端的登录接口
+
+**要什么**：`monkeycode-ai.net`（国际站）有自己的桌面登录端点与网关，
+**不能拿国内站的 cookie 去调**。
+
+**已确认**：
+
+- 桌面二进制里同时出现 `https://monkeycode-ai.net` 与 `https://proxy.monkeycode-ai.net/v1`
+- `proxy.monkeycode-ai.net/v1/messages` GET 返回 **405**（host 活着，只是要 POST）
+- 国内站的 `monkeycode_ai_session` 对 `.net` **无效**：`GET https://monkeycode-ai.net/api/v1/users/models`
+  带国内 cookie 返回 **401 Unauthorized**
+
+**判据**：国际站的登录态必须由国际站自己产生（0.2 的一次性窗口 + 国际站自己的 cookie 名）。
+
+### 0.7 国际版网页登录必须能成功，且列出模型
+
+**现状（2026-11-04，未修复）**：用户在国际版点网页登录，界面报
+**「MonkeyCode 国际版 已登录，但 magpie 无法列出它，请反馈此问题」**。
+
+**已知事实**：
+
+- `https://monkeycode-ai.net/` → 200；`/login` → 200 但**不返 Set-Cookie**（SPA，cookie 由 JS 下发）
+- `https://monkeycode-ai.net/api/v1/users/models` 无 cookie / 国内 cookie → **401**
+- 国内站同一路径 → 200
+
+**因此根因只可能是这两类之一**，改之前先分清：
+
+1. **会话没拿到**：窗口里的登录没真正完成（cookie 名不同，或 `accept()` 太早返回）
+2. **会话拿到了但目录拉不到**：`catalog` 打错了 baseUrl / 路径，或 `.net` 的模型接口不是
+   `/api/v1/users/models`
+
+**判据**（修好 = 这两条同时成立）：
+
+```bash
+# ① 国际站的 cookie 能过认证
+curl -s -H "Cookie: monkeycode_ai_session=<intl-session>" https://monkeycode-ai.net/api/v1/users/status
+# 必须 {"code":0,...}，不能是 401
+
+# ② magpie 侧真的列出了国际站模型
+curl -s http://127.0.0.1:3425/v1/models | grep -c monkeycodeintl   # ≥ 1
+```
+
+**⚠ 不许用「把国内 cookie 写到国际站配置里」的方式糊过去** —— 那会让 0.6 的 401 变成
+「登录了但每次请求都失败」，比现在更难查。
+
+---
+
 ## 一、先定位你在哪一步
 
 别从头读到尾。先看自己在哪一格，只读那一格指的文件。
