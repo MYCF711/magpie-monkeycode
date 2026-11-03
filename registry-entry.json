@@ -1,12 +1,13 @@
 {
   "package": "magpie-monkeycode",
-  "name": "MonkeyCode 猴子编程",
+  "name": "MonkeyCode 与百智云",
   "providers": [
     "monkeycode",
-    "monkeycodeintl"
+    "monkeycodeintl",
+    "baizhi"
   ],
   "summary": {
-    "en": "Signs in to MonkeyCode (China and international) and serves its models to every agent magpie runs: browser sign-in or API key, gateway request signing, daily quota and credits, daily check-in.",
-    "zh": "签入 MonkeyCode 国内站与国际站，把它的模型提供给 magpie 里的每个 agent：浏览器登录或 API Key、网关请求签名、每日额度与积分、每日签到。"
+    "en": "Signs in to MonkeyCode (China and international) and BaiZhiCloud, and serves their models to every agent magpie runs: browser sign-in or API key, gateway request signing, quota and credits, daily check-in.",
+    "zh": "签入 MonkeyCode 国内站、国际站与百智云，把它们的模型提供给 magpie 里的每个 agent：浏览器登录或 API Key、网关请求签名、额度与积分、每日签到。"
   }
 }

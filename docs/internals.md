@@ -2,7 +2,8 @@
 
 > README 只讲用户能看到什么；这里讲协议、取舍和「验证到哪一步」。
 > 所有事实来自 2026-11-03 读取 [`iJetLi/dsh-providers-hub`](https://github.com/iJetLi/dsh-providers-hub)
-> 的 `src/monkeycode-*.ts`（该仓库是 Betsy20/magpie-Jet-Hub 的上游）。
+> 的 `src/monkeycode-*.ts` 与 `src/baizhi-*.ts`（该仓库是 Betsy20/magpie-Jet-Hub 的上游，
+> commit `9047d42`）。第 1-7 节讲 MonkeyCode，第 8 节讲百智云。
 
 ## 1. 两个站点，一份协议
 
@@ -144,6 +145,68 @@ POST /api/v1/users/wallet/checkin {captcha_token}
 - 上下文窗口只在**有实测证据**的 DeepSeek 系上声明 `1,048,576`（服务端 400 原文：`maximum context length is 1048576 tokens`）。`glm-5` 未实测，就不声明 —— 这个字段会被 agent 拿去算压缩阈值，谎报比缺一条进度条代价大得多。
 - 不声明 `reasoning` 档位：MonkeyCode 没有下发「每个模型支持哪些思考档位」的元数据，编一张表就是假能力。
 
+## 8. 百智云（第三个供应商）
+
+与 MonkeyCode 是**两套账号体系**：独立凭据、按量计费、没有每日额度、没有签到。
+它是 MonkeyCode 文档站（`monkeycode.docs.baizhi.cloud`）背后的模型网关，但不是同一个平台。
+
+### 两套凭据，各管一段
+
+| 凭据 | 能干什么 | 不能干什么 |
+|---|---|---|
+| 控制台 cookie（`baizhi_session` / `sl-session`） | 查积分、查用量、读资料、读 Key 列表 | 不能推理 |
+| 推理 Key（`sk-` + 64 位，共 67 字符） | 调模型网关、拉模型目录 | 查不到积分（`x-api-key` 打控制台一律 401） |
+
+⚠ 两个「两套」最容易搞混：
+
+1. 控制台 `baizhi.cloud/api/v1/user/api-keys` 只发 **`bzy_`** 前缀（15 位），拿它打模型网关恒 401 ——
+   真正能用的推理 Key 来自**大模型商店**的 console 接口
+   `GET https://ai-models.app.baizhi.cloud/api/console/api-keys`（响应字段是 `api_key`，不是 `key`）；
+2. 控制台 cookie 只够查余额，**不是**推理凭据。
+
+### 请求
+
+```
+POST https://ai-models.app.baizhi.cloud/api/anthropic/v1/messages
+x-api-key: sk-…            ← 只有这一个鉴权头
+anthropic-version: 2023-06-01
+```
+
+**没有签名头** —— 这是与 MonkeyCode 最大的差别，也是为什么它单独一个 runtime。
+
+### 模型目录（唯一有远端的一家）
+
+`GET https://ai-models.app.baizhi.cloud/api/anthropic/v1/models` →
+`{"data":[{"id":"deepseek-v4-pro","type":"model","display_name":"…","created_at":"…"}]}`（实测 45 个 id）。
+
+远端**没有能力字段**（窗口、图片都没有），所以：
+
+- 窗口只从本地已知表补，且只给 4 条 DeepSeek（1,048,576，服务端 400 原文作证）；
+- 图片只给明确知道能看图的 5 个模型；
+- 未知模型照常列出，但不声明窗口、不声明图片 —— 省略比谎报安全；
+- 远端失败退回 15 条内置表，**不返回空表**（空表会让用户的模型列表整片消失）。
+
+### 积分
+
+`GET https://baizhi.cloud/api/v1/user/wallet/balance`（cookie）：
+
+| 字段 | 含义 | 换算 |
+|---|---|---|
+| `available_credit_cents` | 可用积分（必须） | **1/100 积分** |
+| `temporary_credit_cents` | 每日积分（零点过期） | 1/100 积分 |
+| `permanent_credit_cents` | 充值积分（长期有效） | 1/100 积分 |
+| `frozen_credit_cents` | 冻结积分 | 1/100 积分 |
+| `daily_temporary_credit_claimed` | 今天的每日积分领了没有 | 布尔 |
+
+用量：`GET /api/v1/user/wallet/app-credit-usage?period=week|month|year` → `items[].{period, call_count, credit}`
+（`period` 是**本地日历日**，所以「今天」也按本地时区算）。
+
+映射到 magpie：四个钱包型窗口（可用 / 每日 / 充值 / 今日消耗）。没有数量型窗口 —— 按量计费没有上限，
+硬造一个分母就是假占比。
+
+- 每日积分用官方 `runsOutAt` + `runsOut` 表达「零点过期」（`nextUtc8Midnight()`），不拼进 `display`；
+- 今日消耗是 `textOnly` 窗口：只有文字，不参与路由排序（它本来也不是额度）。
+
 ## 7. 代码地图
 
 | 文件 | 职责 |
@@ -155,13 +218,19 @@ POST /api/v1/users/wallet/checkin {captcha_token}
 | `src/monkeycode/credits.mjs` | 平台接口：换 Key、钱包、订阅、签到、PoW |
 | `src/monkeycode/browser-login.mjs` | 受控 Chromium + CDP 轮询 |
 | `src/monkeycode-icon.mjs` | 官方图标（data URI） |
+| `src/baizhi/site.mjs` | 百智云常量与 15 条兜底模型 |
+| `src/baizhi/runtime.mjs` | 百智云九钩子装配（无 checkin） |
+| `src/baizhi/credits.mjs` | 钱包 / 用量 / 换 Key / 远端模型目录 |
+| `src/platform-http.mjs` | 两家共用的平台请求（cookie、信封、失败翻译） |
+| `src/credential.mjs` | 两家共用的凭据解析 |
+| `src/session-login.mjs` | 两家共用的浏览器会话登录（CDP） |
 | `src/quota.mjs` / `src/usage-cache.mjs` | 脚手架自带的额度构造器与缓存 |
 
 ## 8. 测试
 
 ```bash
-node --test        # 172 条，全部离线（需要网络的地方注入 fetchImpl）
-node scripts/check.mjs   # 46 条合规检查
+node --test        # 187 条，全部离线（需要网络的地方注入 fetchImpl）
+node scripts/check.mjs   # 49 条合规检查
 ```
 
 `tests/monkeycode.test.mjs` 锁的是语义：签名公式与「改 body 签名跟着变」、prompt 提取顺序、凭据三种输入、cookie 归一、PoW 回归向量与解验证、信封解包、失败分类、额度窗口映射、loader 的请求改写。

@@ -103,3 +103,59 @@ test("端到端：签名用错密钥时服务端 403，插件不吞响应", asyn
     server.close()
   }
 })
+
+test("百智云端到端：真实 HTTP、只认 x-api-key、目录能拉到", async () => {
+  const { createServer } = await import("node:http")
+  const { once } = await import("node:events")
+  const { makeBaizhiPlugin } = await import("../src/baizhi/runtime.mjs")
+
+  const KEY = "sk-" + "c".repeat(64)
+  const seen = []
+  const server = createServer(async (req, res) => {
+    let body = ""
+    for await (const chunk of req) body += chunk
+    seen.push({ url: req.url, headers: req.headers, body })
+    if (req.headers["x-api-key"] !== KEY) {
+      res.writeHead(401, { "content-type": "application/json" })
+      res.end(JSON.stringify({ error: "invalid api key" }))
+      return
+    }
+    if (req.url === "/api/anthropic/v1/models") {
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(JSON.stringify({ data: [{ id: "deepseek-v4-pro", display_name: "DeepSeek V4 Pro" }] }))
+      return
+    }
+    res.writeHead(200, { "content-type": "text/event-stream" })
+    res.end('event: message_stop\ndata: {"type":"message_stop"}\n\n')
+  })
+  server.listen(0, "127.0.0.1")
+  await once(server, "listening")
+  const { port } = server.address()
+  const origin = `http://127.0.0.1:${port}`
+  try {
+    const plugin = await makeBaizhiPlugin({
+      ...(await import("../src/baizhi/site.mjs")).BAIZHI,
+      baseUrl: `${origin}/api/anthropic/v1`,
+      modelsUrl: `${origin}/api/anthropic/v1/models`,
+    })({ client: {} })
+    const auth = { type: "api", key: KEY }
+
+    const models = await plugin.provider.models({ models: {} }, { auth })
+    assert.deepEqual(Object.keys(models), ["deepseek-v4-pro"])
+
+    const loader = await plugin.auth.loader(async () => auth)
+    const body = JSON.stringify({ model: "deepseek-v4-pro", messages: [], max_tokens: 8, stream: true })
+    const response = await loader.fetch(`${origin}/api/anthropic/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": "wrong" },
+      body,
+    })
+    assert.equal(response.status, 200, "loader 必须用凭据里的 key 覆盖调用方给的")
+    const message = seen.find((entry) => entry.url === "/api/anthropic/v1/messages")
+    assert.equal(message.headers["x-api-key"], KEY)
+    assert.equal(message.headers["x-ohmyagent-signature"], undefined)
+    assert.equal(message.body, body)
+  } finally {
+    server.close()
+  }
+})

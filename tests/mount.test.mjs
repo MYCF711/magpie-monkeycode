@@ -1,7 +1,7 @@
-// tests/mount.test.mjs —— 单包双 Provider 的挂载契约
+// tests/mount.test.mjs —— 单包多 Provider 的挂载契约
 //
 // magpie 会把入口里的每个函数导出都当成插件工厂，因此这里锁四件事：
-//   ① 入口恰好导出两个 *Plugin 函数
+//   ① 入口恰好导出三个 *Plugin 函数
 //   ② 两个函数返回完整九钩，provider id 与各自的站点一致
 //   ③ 未登录时 config.models 仍非空（否则卡片显示 "0 models"）
 //   ④ loader 未登录返回空对象，usage 不伪造额度
@@ -17,15 +17,19 @@ import { _internal } from "../index.mjs"
 const EXPECTED = {
   monkeycode: entry.MonkeyCodeAuthPlugin,
   monkeycodeintl: entry.MonkeyCodeIntlAuthPlugin,
+  baizhi: entry.BaizhiAuthPlugin,
 }
 
-test("入口恰好导出两个插件函数", () => {
+/** 有签到的供应商（百智云没有）。 */
+const CHECKIN = new Set(["monkeycode", "monkeycodeintl"])
+
+test("入口恰好导出三个插件函数", () => {
   const functions = Object.entries(entry)
     .filter(([, value]) => typeof value === "function")
     .map(([key]) => key)
     .sort()
-  assert.deepEqual(functions, ["MonkeyCodeAuthPlugin", "MonkeyCodeIntlAuthPlugin"])
-  assert.equal(_internal.providers.length, 2)
+  assert.deepEqual(functions, ["BaizhiAuthPlugin", "MonkeyCodeAuthPlugin", "MonkeyCodeIntlAuthPlugin"])
+  assert.deepEqual([..._internal.providers], ["monkeycode", "monkeycodeintl", "baizhi"])
 })
 
 for (const [id, factory] of Object.entries(EXPECTED)) {
@@ -37,7 +41,8 @@ for (const [id, factory] of Object.entries(EXPECTED)) {
     assert.equal(typeof plugin.auth.refresh, "function")
     assert.equal(typeof plugin.auth.loader, "function")
     assert.equal(typeof plugin.auth.usage, "function")
-    assert.equal(typeof plugin.auth.checkin, "function")
+    if (CHECKIN.has(id)) assert.equal(typeof plugin.auth.checkin, "function")
+    else assert.equal(plugin.auth.checkin, undefined, `${id} 没有签到，不该实现 checkin`)
     assert.equal(typeof plugin.provider.models, "function")
     assert.equal(typeof plugin["chat.headers"], "function")
     assert.ok(Array.isArray(plugin.auth.methods) && plugin.auth.methods.length >= 1)
@@ -62,7 +67,7 @@ for (const [id, factory] of Object.entries(EXPECTED)) {
         assert.equal(typeof model.capabilities.input[key], "boolean", `${modelId}.${key}`)
       }
       assert.equal(model.api.npm, "@ai-sdk/anthropic", `${modelId} 走 Anthropic Messages`)
-      assert.ok(model.api.url.startsWith("https://proxy.monkeycode-ai."), `${modelId}.api.url`)
+      assert.match(model.api.url, /^https:\/\//, `${modelId}.api.url`)
     }
   })
 

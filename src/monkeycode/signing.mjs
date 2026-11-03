@@ -18,6 +18,8 @@
 
 import { createHmac } from "node:crypto"
 
+import { parseCredential } from "../credential.mjs"
+
 /** 从内容块里取文本（string 直接返回；对象取其 `text` 字段）。 */
 function textOfBlock(block) {
   if (typeof block === "string") return block
@@ -151,42 +153,8 @@ export function shouldRotate(failureClass) {
   return failureClass === "quota" || failureClass === "rate" || failureClass === "auth" || failureClass === "server"
 }
 
-/**
- * 解析凭据。
- *
- * magpie 的 `{ type: "api" }` 登录只保存一个字符串 key，而 MonkeyCode 需要
- * 两个独立字段（`access_token` + `signing_secret`）。三种输入都接受：
- * - 完整 JSON：`{"access_token":"oma_…","signing_secret":"…"}`（可带 session_cookie / nickname / user_id）
- * - 冒号/空白分隔：`oma_…:signing_secret`、`oma_… signing_secret`
- * - 裸 token：`oma_…`（此时没有 signing_secret，网关会 403 —— 登录时就拦下，不假装可用）
- *
- * ⚠ 刻意**不校验前缀**：上游将来可能加新前缀，把 `oma_` 写死会让新 Key 直接被判
- * 「凭据不完整」（opencode 的 IKPLRU 教训）。
- */
-export function parseCredential(raw) {
-  if (typeof raw !== "string") return undefined
-  const text = raw.trim()
-  if (text.length === 0) return undefined
-  if (text.startsWith("{")) {
-    try {
-      const parsed = JSON.parse(text)
-      if (typeof parsed !== "object" || parsed === null) return undefined
-      if (typeof parsed.access_token !== "string" || parsed.access_token.length === 0) return undefined
-      return parsed
-    } catch {
-      return undefined
-    }
-  }
-  // `oma_…:<secret>` 或 `oma_… <secret>`：平台「OhMyAgent」页面把两个值分开显示，
-  // 用户会很自然地把它们拼在一行里。
-  const TOKEN = /^[A-Za-z0-9_.\-/+=]{16,}$/
-  const pair = text.match(/^([^\s:]+)[\s:]+([^\s:]+)$/)
-  if (pair && TOKEN.test(pair[1]) && TOKEN.test(pair[2])) {
-    return { access_token: pair[1], signing_secret: pair[2] }
-  }
-  // 裸 token 只接受「像 token 的值」：含空格/中文的输入不是 token，判无效而不是硬塞。
-  return TOKEN.test(text) ? { access_token: text } : undefined
-}
+// 凭据解析已抽到 src/credential.mjs（百智云也用它）；这里原样透出，调用方不必改 import。
+export { maskKey, parseCredential } from "../credential.mjs"
 
 /** 凭据是否可用（两个字段都要有）。 */
 export function isUsableCredential(credential) {
@@ -195,10 +163,4 @@ export function isUsableCredential(credential) {
     && typeof credential.access_token === "string" && credential.access_token.length > 0
     && typeof credential.signing_secret === "string" && credential.signing_secret.length > 0,
   )
-}
-
-/** 面板展示用的打码 key（`前4…后4`）；形状不合法返回空串。 */
-export function maskKey(apiKey) {
-  if (typeof apiKey !== "string" || apiKey.length < 12) return ""
-  return `${apiKey.slice(0, 4)}…${apiKey.slice(-4)}`
 }

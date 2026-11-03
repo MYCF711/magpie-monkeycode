@@ -10,6 +10,15 @@
 // 才判业务失败（有的端点直接回裸对象）。
 
 import { createHash } from "node:crypto"
+import {
+  cookieOf as cookieOfBase,
+  describeFailure,
+  isSessionPendingError,
+  normalizeCookie as normalizeCookieBase,
+  platformRequest,
+  readNumber,
+  unwrapEnvelope,
+} from "../platform-http.mjs"
 
 /** 签到验证题的求解次数上限（防上游形态变化导致死循环）。 */
 const MAX_POW_ATTEMPTS_PER_QUESTION = 20_000_000
@@ -25,125 +34,22 @@ export const PLAN_DAILY_LIMIT = Object.freeze({ basic: 10_000_000, pro: 100_000_
 
 /**
  * 把用户可能粘贴的 cookie 串归一成可以直接放进 `Cookie` 头的值。
- *
- * 接受：完整 cookie 串（`a=1; b=2`）、裸值（补上 cookie 名）、带 `cookie:` 前缀的复制品。
+ * 通用实现在 src/platform-http.mjs；这里只绑定本平台的 cookie 名。
  */
 export function normalizeCookie(raw, cookieName) {
-  if (typeof raw !== "string") return undefined
-  let text = raw.trim()
-  if (text.length === 0) return undefined
-  text = text.replace(/^cookie\s*:\s*/i, "").trim()
-  if (text.length === 0) return undefined
-  if (/^[A-Za-z_][A-Za-z0-9_.-]*=/.test(text)) return text
-  const value = text.replace(/[\r\n]/g, "").trim()
-  return value.length === 0 ? undefined : `${cookieName}=${value}`
+  return normalizeCookieBase(raw, [cookieName], cookieName)
 }
 
 /** 从凭据里取归一化后的 cookie；没有则 undefined。 */
 export function cookieOf(credential, cookieName) {
-  if (!credential) return undefined
-  const raw = credential.session_cookie
-  if (typeof raw !== "string") return undefined
-  return normalizeCookie(raw, cookieName)
-}
-
-/**
- * 平台 REST 请求头。
- *
- * 带 referer / user-agent 只是「尽量与网页同形」的保守选择 —— 平台是普通
- * SPA + REST，没有证据表明它强制校验这两项；但缺失时被边缘 WAF 拦掉的概率更高，
- * 而签到是写操作，失败一次就少一天的量。
- */
-export function platformHeaders(cookie, platformBaseUrl) {
-  return {
-    cookie,
-    accept: "application/json",
-    referer: `${platformBaseUrl}/`,
-    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-      + "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-  }
-}
-
-/** 把 HTTP 失败翻译成能行动的中文原因。401/403 单独成句（Cookie 过期）。 */
-export function describeFailure(status, text) {
-  const excerpt = String(text ?? "").replace(/\s+/g, " ").trim().slice(0, 200)
-  const suffix = excerpt.length === 0 ? "" : `：${excerpt}`
-  if (status === 401 || status === 403) {
-    return `网页登录态未生效（HTTP ${status}）—— 平台接口只认已登录的会话，`
-      + "请确认浏览器窗口里已经完成登录"
-  }
-  return `平台接口返回 HTTP ${status}${suffix}`
+  return cookieOfBase(credential, [cookieName], cookieName)
 }
 
 /** 该失败是「会话还没生效」（401/403），而不是真的出错。 */
-export function isSessionExpiredError(message) {
-  return /HTTP 40[13]/.test(String(message ?? "")) || String(message ?? "").includes("网页登录态未生效")
-}
+export const isSessionExpiredError = isSessionPendingError
 
-/** 从 `{ code, data, message }` 信封里取 `data`。 */
-export function unwrapEnvelope(data) {
-  if (data === null || typeof data !== "object") {
-    return { ok: false, error: "平台接口返回的报文不是对象（上游形态可能已变）" }
-  }
-  if (typeof data.code === "number" && data.code !== 0) {
-    const message = typeof data.message === "string" && data.message.trim().length > 0
-      ? data.message.trim()
-      : `业务码 ${data.code}`
-    return { ok: false, error: `平台接口拒绝：${message}` }
-  }
-  const value = data.data !== undefined ? data.data : data
-  if (value === null || typeof value !== "object") {
-    return { ok: false, error: "平台接口返回的 data 不是对象（上游形态可能已变）" }
-  }
-  return { ok: true, value }
-}
-
-/**
- * 发一个平台请求并把响应体读成 JSON。
- *
- * 「200 + HTML」是本仓记录过的假 200 形态（SPA catch-all 路由）：
- * 若把原文当成功传下去，上层会以为是报文变形，排查方向直接跑偏。
- */
-export async function platformRequest(cookie, url, { method = "GET", body, timeoutMs = 10_000, fetchImpl = fetch } = {}) {
-  const headers = platformHeaders(cookie, new URL(url).origin)
-  if (body !== undefined) headers["content-type"] = "application/json"
-  let response
-  try {
-    response = await fetchImpl(url, {
-      method,
-      headers,
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(timeoutMs),
-    })
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error)
-    return { ok: false, status: 0, error: `平台接口请求失败：${reason}` }
-  }
-  const text = await response.text().catch(() => "")
-  if (!response.ok) {
-    return { ok: false, status: response.status, error: describeFailure(response.status, text) }
-  }
-  if (text.trim().length === 0) return { ok: true, data: undefined }
-  try {
-    return { ok: true, data: JSON.parse(text) }
-  } catch {
-    return {
-      ok: false,
-      status: response.status,
-      error: "平台接口返回了非 JSON 响应（HTTP 200，可能是会话失效被重定向到登录页）："
-        + `${text.replace(/\s+/g, " ").trim().slice(0, 120)}`,
-    }
-  }
-}
-
-function readNumber(value) {
-  if (typeof value === "number") return Number.isFinite(value) ? value : undefined
-  if (typeof value === "string" && value.trim().length > 0) {
-    const parsed = Number(value)
-    return Number.isFinite(parsed) ? parsed : undefined
-  }
-  return undefined
-}
+// 通用件原样透出：调用方与测试一直从这里取，不需要知道它搬去了 platform-http。
+export { describeFailure, platformRequest, unwrapEnvelope }
 
 /**
  * 用网页会话 cookie 换一对网关凭据。
