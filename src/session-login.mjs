@@ -237,15 +237,21 @@ export async function browserLogin({
   signal,
   profileDir,
   browser = findBrowser(),
+  /** 同 startBrowserLogin：一段每秒执行一次的小动作（勾协议、点「确认授权」）。 */
+  onPoll,
 }) {
   // 单名（MonkeyCode）与多名（百智云要 sl-session + baizhi_session）两种用法。
   const names = Array.isArray(cookieNames) && cookieNames.length > 0 ? cookieNames : [cookieName]
 
   const handle = await openControlledBrowser({ url, profileDir, browser })
   const deadline = Date.now() + timeoutMs
+  let tick = 900
   try {
     while (Date.now() < deadline) {
       if (signal?.aborted) throw new Error("登录已取消")
+      if (typeof onPoll === "string" && onPoll.length > 0) {
+        await cdpSend(handle.ws, tick++, "Runtime.evaluate", { expression: onPoll, returnByValue: true }).catch(() => {})
+      }
       const cookies = await cookiesOn(handle.ws).catch(() => [])
       const cookie = sessionCookieOf(cookies, names, cookieDomains)
       // 没有会话就继续等；有会话但换不到 Key（匿名会话）也继续等 ——

@@ -3,6 +3,14 @@
 > 每个版本一节，**一条一行**，说用户能感知的变化。
 > 格式与规矩见 [UPDATING.md](./UPDATING.md)。
 
+## 0.2.26 — 2026-11-04
+
+**观猹账号登录拿不到 cookie / api key 的真因：扫码之后那张「确认授权」页没人点**
+
+- 实测：MonkeyCode 的「快速注册」并不是独立注册，点下去直接跳到 `baizhi.cloud/sign-in?redirect=%2Foauth%2Fauthorize%3Fclient_id%3Dmonkeycode-ai` —— 也就是**百智云的微信扫码登录**。扫码成功后会落到一张 OAuth 授权确认页（「确认授权 / 取消」），**不点它会话就建不起来**，插件等 `monkeycode_ai_session` 等到超时，用户看到的就是「登录了但拿不到 cookie 和 api key」
+- 登录等待期间每秒自动执行：勾协议 + 点「确认授权」（`LOGIN_AUTOPILOT_JS`）。三条浏览器登录路径（浏览器登录 / 添加另一个账号 / 百智云开通）都挂上了
+- `browserLogin` 也支持 `onPoll`（之前只有 `startBrowserLogin` 有）
+
 ## 0.2.25 — 2026-11-04
 
 **支持「观猹账号微信扫码登录百智云」：插件替你勾掉用户协议**

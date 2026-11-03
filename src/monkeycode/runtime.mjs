@@ -46,6 +46,27 @@ function existingAccountWithUid(providerId, uid) {
     return false
   }
 }
+
+/**
+ * 登录期间每秒执行一次：勾掉用户协议 + 点「确认授权」。
+ *
+ * MonkeyCode 的「快速注册」其实就是百智云的微信扫码登录（点下去会跳到
+ * baizhi.cloud/sign-in?redirect=/oauth/authorize&client_id=monkeycode-ai）。
+ * 所以用户在窗口里扫码之后，还会落到一张 **OAuth 授权确认页**（「确认授权 / 取消」）
+ * —— 不点它，会话永远建立不起来，插件等 cookie 等到超时，用户看到的就是
+ * 「观猹账号登录拿不到 cookie 和 api key」（2026-11-04 真机）。
+ */
+const LOGIN_AUTOPILOT_JS = `(() => {
+  const boxes = [...document.querySelectorAll('input[type=checkbox]')].filter((el) => !el.checked);
+  for (const box of boxes) box.click();
+  const btn = [...document.querySelectorAll('button,a,[role=button]')]
+    .find((el) => /确认授权|同意授权|允许授权/.test(((el.textContent || '') + '').trim()));
+  if (btn) {
+    btn.click();
+    return 'authorized';
+  }
+  return 'ok';
+})()`
 import {
   claimCheckin, cookieOf, exchangeSessionForKey, fetchPlan, fetchProfile, fetchWallet, PLAN_LABELS,
 } from "./credits.mjs"
@@ -203,6 +224,8 @@ async function signInWithBrowser(site, { fetchImpl, signal } = {}) {
       // 同一站第二次登录复用 profile（cookie 还在就不用再输账号密码）。
       profileDir: profileDirFor(site.id),
       timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
+      // 扫码之后那张「确认授权」页要有人点，否则会话建不起来。
+      onPoll: LOGIN_AUTOPILOT_JS,
       signal,
       async accept(candidate) {
         let result
@@ -497,6 +520,7 @@ export function makePlugin(site) {
                     // 关键：**不传 profileDir** → 一次性 profile，必须真的重新登/注册。
                     cookieNames: [site.sessionCookie],
                     timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
+                    onPoll: LOGIN_AUTOPILOT_JS,
                     async accept() {
                       return true
                     },
