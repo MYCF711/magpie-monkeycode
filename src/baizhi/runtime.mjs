@@ -121,7 +121,12 @@ async function signInWithBrowser(site, { fetchImpl, signal } = {}) {
   try {
     await browserLogin({
       url: site.loginUrl,
-      cookieName: site.sessionCookie,
+      // 控制台同时下发 sl-session（设备/风控）与 baizhi_session（登录），
+      // 实测**两枚都要**：只带 baizhi_session 时 /api/v1/user/profile 会 401。
+      cookieNames: [...site.sessionCookies],
+      // cookie 必须精确落在 baizhi.cloud 上：同名 sl-session 还有两枚属于
+      // ai-models / agent-toolkit 子域，用后缀匹配会随机拿到网关那枚。
+      cookieDomains: ["baizhi.cloud"],
       timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
       signal,
       async accept(candidate) {

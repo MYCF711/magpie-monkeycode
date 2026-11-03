@@ -80,11 +80,13 @@ export const BAIZHI = Object.freeze({
   /**
    * 登录页在**主站**，不是大模型商店。
    *
-   * ⚠ 直接开 `ai-models.app.baizhi.cloud/console/keys` 会得到一片空白 +
-   * 「登录状态已失效」：那个 SPA 拿不到平台登录态时会 `location.replace("/")`
-   * 然后渲染失败页 —— 它没有登录入口，用户会以为账号坏了。
+   * ⚠ 两个都不能开：
+   * - `ai-models.app.baizhi.cloud/console/keys`：那个 SPA 拿不到平台登录态时会
+   *   `location.replace("/")` 再渲染失败页，**它没有登录入口**；
+   * - `baizhi.cloud/console/login`：路由不存在，直接 404。
+   * 上游用的是 `baizhi.cloud/console`（301 到 `/console/`，SPA 壳，未登录时前端给登录框）。
    */
-  loginUrl: "https://baizhi.cloud/console/login",
+  loginUrl: "https://baizhi.cloud/console/",
   walletBalancePath: "/api/v1/user/wallet/balance",
   walletUsagePath: "/api/v1/user/wallet/app-credit-usage",
   profilePath: "/api/v1/user/profile",

@@ -17,6 +17,7 @@ import { createUsageCache } from "../usage-cache.mjs"
 
 import { SITES } from "../sites.mjs"
 import { browserLogin, BROWSER_LOGIN_TIMEOUT_MS } from "./browser-login.mjs"
+import { importOneBaizhiAccount, signInWithBaizhiSession } from "./sso-import.mjs"
 import {
   claimCheckin, cookieOf, exchangeSessionForKey, fetchPlan, fetchProfile, fetchWallet, PLAN_LABELS,
 } from "./credits.mjs"
@@ -220,6 +221,88 @@ export function makePlugin(site) {
             type: "api",
             label: `${site.displayName} API Key`,
             placeholder: '{"access_token":"oma_…","signing_secret":"…"}',
+          },
+          {
+            type: "oauth",
+            label: `${site.displayName} 用百智云账号开通`,
+            /**
+             * 用百智云的账号体系直接开通 MonkeyCode（OAuth SSO，首次登录自动建号）。
+             *
+             * 窗口开的是**百智云控制台**：用户在里面登录/切换账号，插件读到
+             * `sl-session` + `baizhi_session` 之后，在后台无头浏览器里完成
+             * `monkeycode → baizhi.cloud/oauth/authorize → callback` 这一步。
+             *
+             * 一个账号点一次；想再开一个号，在窗口里换号再点。
+             */
+            async authorize() {
+              return {
+                url: "https://baizhi.cloud/console/",
+                instructions: "在打开的窗口里登录你的百智云账号；登录完成后本页会自动开通 MonkeyCode。"
+                  + "要再加一个号，登录另一个百智云账号后再点一次。",
+                method: "auto",
+                opened: true,
+                async callback() {
+                  let baizhiCookie
+                  try {
+                    const result = await browserLogin({
+                      url: "https://baizhi.cloud/console/",
+                      // 控制台同时下发 sl-session（设备/风控）与 baizhi_session（登录），
+                      // 两枚都要；且必须精确落在 baizhi.cloud 上（同名 sl-session
+                      // 还有两枚属于 ai-models / agent-toolkit 子域）。
+                      cookieNames: ["sl-session", "baizhi_session"],
+                      cookieDomains: ["baizhi.cloud"],
+                      timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
+                      async accept() {
+                        return true
+                      },
+                    })
+                    baizhiCookie = result.cookie
+                  } catch (error) {
+                    return { type: "failed", error: error instanceof Error ? error.message : String(error) }
+                  }
+                  try {
+                    const signed = await signInWithBaizhiSession(baizhiCookie, site)
+                    return {
+                      type: "success",
+                      access: JSON.stringify(signed.credential),
+                      expires: 0,
+                      accountId: signed.nickname ?? "",
+                      uid: signed.userId ?? "",
+                    }
+                  } catch (error) {
+                    return { type: "failed", error: error instanceof Error ? error.message : String(error) }
+                  }
+                },
+              }
+            },
+          },
+          {
+            type: "oauth",
+            label: `${site.displayName} 从已登录的百智云账号批量开通`,
+            /**
+             * 走 magpie 里**已经登录**的百智云账号：每个账号点一次，插件自动挑
+             * 下一个没开通过的号做 SSO。适合已经有一堆百智云账号的情况。
+             */
+            async authorize() {
+              return {
+                url: site.loginUrl ?? `${site.platformBaseUrl}/`,
+                instructions: "自动用下一个还没开通过的百智云账号开通 MonkeyCode（后台完成，不会弹窗）。",
+                method: "auto",
+                opened: true,
+                async callback() {
+                  const result = await importOneBaizhiAccount(site)
+                  if (!result.ok) return { type: "failed", error: result.error }
+                  return {
+                    type: "success",
+                    access: result.access,
+                    expires: 0,
+                    accountId: result.accountId,
+                    uid: result.uid,
+                    message: result.remaining > 0 ? `还有 ${result.remaining} 个百智云账号可以继续导入` : "",
+                  }
+                },
+              }
+            },
           },
           {
             type: "oauth",

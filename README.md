@@ -1,115 +1,44 @@
-# MonkeyCode 与百智云 for magpie
+# 更新记录
 
-**一个包签入三家渠道，24 个模型直接进 magpie —— 浏览器登录一次，DeepSeek、GLM、Kimi、Qwen 就能被任何 agent 用。**
+> 每个版本一节，**一条一行**，说用户能感知的变化。
+> 格式与规矩见 [UPDATING.md](./UPDATING.md)。
 
-MonkeyCode（长亭科技）是面向工程团队的开源 AI 编程平台，托管版每天有免费额度，也能私有化部署；
-百智云是 MonkeyCode 文档站背后的模型网关，按量计费、账号独立。这个插件把三家用你自己的账号接进来。
+## 0.2.2 — 2026-11-03
 
-```
-3 个供应商   国内站 monkeycode / 国际站 monkeycodeintl / 百智云 baizhi
-24 个模型    9 条 MonkeyCode 额度模型 + 15 条百智云模型
-2 条登录路   浏览器登录（自动换凭据）、API Key 录入
-0 次手工抄   Cookie 是 HttpOnly 的，插件自己从浏览器读
-```
+**百智云登录页换成真的那个；MonkeyCode 可以用百智云账号直接开通**
 
----
+- 修百智云登录窗 404：`/console/login` 这个路由根本不存在，改开 `baizhi.cloud/console/`（上游用的就是它）
+- 百智云登录改成要**两枚** cookie：`sl-session`（设备/风控）+ `baizhi_session`（登录），且必须精确落在 `baizhi.cloud` 域 —— 同名 `sl-session` 还有两枚属于 ai-models / agent-toolkit 子域，按后缀匹配会随机拿错
+- 新增 MonkeyCode 登录方式「**用百智云账号开通**」：窗口里登录你的百智云账号（或换号再点一次），插件在后台无头完成 `monkeycode → baizhi.cloud/oauth/authorize → callback` 的 SSO 并换出网关凭据；首次登录时由 MonkeyCode 侧自动建号
+- 新增登录方式「**从已登录的百智云账号批量开通**」：直接读 magpie 里已经登录的百智云账号，每次点一下自动挑下一个还没开通过的号做 SSO，已导入的记在本地不会重复
 
-## 功能
+## 0.2.1 — 2026-11-03
 
-- **三家三张卡** —— 国内站与国际站账号池不互通（国内 cookie 打国际站回 401），百智云更是另一套账号体系，所以不能合成一张卡。
-- **浏览器登录一次就够** —— 插件开一个一次性的受控浏览器窗口，你在里面登完，它自动读会话、换网关凭据、再读你的昵称或积分。
-- **API Key 也能录** —— MonkeyCode 粘 `{"access_token":"oma_…","signing_secret":"…"}`（或 `oma_…:密钥`），百智云粘 `sk-…`。
-- **网关签名现算** —— MonkeyCode 每个请求按最终 body 里的 prompt 重算 `X-OhMyAgent-Signature`；改了 payload 签名跟着变，不会出现只有一句 `invalid ohmyagent request` 的 403。
-- **额度看得到** —— MonkeyCode 显示每日额度与积分余额，百智云显示可用 / 每日 / 充值积分与今日消耗。
-- **模型目录跟得上** —— 百智云走远端目录，平台上下架会跟着变；MonkeyCode 网关没有目录接口，用内置快照。
-- **每日签到自动做** —— MonkeyCode 的 PoW 验证题本地解完再领，今天签过就不发写请求。百智云没有签到，插件也不会假装有。
-- **不假装能刷新** —— 两家的凭据都是长期静态材料，上游没有续期端点，插件也不会定时发注定失败的请求。
+**修三个装完就撞上的问题**
 
----
+- 修「已登录，但 magpie 无法列出它」：模型 id 里的 `/` 被 magpie 读成「provider/模型」分隔符，`monkeycode-basic/deepseek-flash` 之类会凭空长出三个不存在的供应商。现在 magpie 侧用压平的 id，上游真实 id 交给 `apiId`
+- 修登录窗口开错页面：MonkeyCode 直接开 `/login`（默认入口有「百智云登录」）；百智云改开控制台登录页 —— 之前开的是大模型商店，没登录态时它只会渲染一片「登录状态已失效」，用户以为账号坏了
+- 修国际站登录超时：换凭据请求的超时从 10 秒提到 30 秒（国际站实测单次 11 秒以上），且登录窗口里遇到网络超时**继续等**而不是直接判失败
 
-## 模型
+## 0.2.0 — 2026-11-03
 
-**DeepSeek / 智谱 GLM / Kimi / MiniMax / Qwen** —— 各家在平台上架的都在；百智云跟随远端目录，MonkeyCode 用内置快照。
+**新增第三个供应商：百智云（BaiZhiCloud）**
 
-| 供应商 | 代表模型 | 上下文 | 计费方式 |
-|---|---|---|---|
-| MonkeyCode | `monkeycode-pro-deepseek-v4-pro` | 1,048,576 | 每日额度（pro 档） |
-| MonkeyCode | `monkeycode-basic-deepseek-flash` | 1,048,576 | 每日额度（basic 档） |
-| MonkeyCode | `deepseek-v4-flash` | 1,048,576 | 直接扣积分 |
-| MonkeyCode | `glm-5` | 未声明 | 直接扣积分 |
-| 百智云 | `deepseek-v4-pro` | 1,048,576 | 按量计费（积分） |
-| 百智云 | `glm-5.1` / `kimi-k2.6` / `minimax-m2.7` | 未声明 | 按量计费（积分） |
-| 百智云 | `qwen3.6-plus` / `qwen-flash` | 未声明 | 按量计费（积分） |
+- 新增 `baizhi` 供应商：`https://ai-models.app.baizhi.cloud/api/anthropic/v1`，与 MonkeyCode 两站并列，账号体系完全独立（按量计费、没有每日额度、没有签到）
+- 登录两条路：浏览器登录（在控制台登录后自动取出账号下的 `sk-` Key）与 API Key（`sk-…` 直接粘，也接受带 session cookie 的 JSON）
+- 模型目录走远端（`GET /api/anthropic/v1/models`）：登录后跟随平台上下架；拉不到时退回 15 条内置表，不返回空列表
+- 额度卡片：可用积分、每日积分（零点过期，用官方 `runsOutAt` 字段表达）、充值积分、今日消耗
+- 模型能力保守声明：只有 4 条 DeepSeek 声明 1,048,576 上下文，图片只给明确支持看图的模型
+- 通用件抽到 `src/platform-http.mjs`、`src/credential.mjs`、`src/session-login.mjs`，MonkeyCode 与百智云共用，行为不变
 
-- MonkeyCode：id 里带 `monkeycode-basic` / `monkeycode-pro` / `monkeycode-ultra` 前缀的走对应档位的每日额度；不带前缀的直接扣积分。
-- 上游真实的模型 id 是带斜杠的（`monkeycode-basic/deepseek-flash`），插件用 `apiId` 保留它发请求，magpie 里看到的是压平后的 id —— 斜杠会被 magpie 读成「另一个供应商的模型」。
-- 上下文窗口只在**有实测证据**的模型上声明（服务端 400 原文写明 1,048,576）；其余不写 —— 宁可没有进度条，也不谎报一个会让 agent 推迟压缩的窗口。
-- 图片输入只给明确支持看图的模型（百智云：`deepseek-v4-flash-vision-exp`、`glm-5.1`、`kimi-k2.6`、`minimax-m2.7`、`qwen3.5-plus`）。
+## 0.1.0 — 2026-11-03
 
----
+**首个版本：MonkeyCode 国内站 + 国际站，一个包两个供应商**
 
-## 签到
-
-只有 MonkeyCode 有：每天一次、按账号。先查今天签没签（签过就直接回「今天已签」，不发写请求），
-没签就取一道 PoW 验证题、本地解完、提交、再领。验证题形态变了（题面不认识 / 参数越界 / 解不完）时
-如实回报「需要手动签到」，不会无限重试。百智云没有签到接口，插件不提供这个能力。
-
----
-
-## 安装
-
-在 magpie 的 **插件 → 发现** 搜 `MonkeyCode`，点**安装**；或在 **插件 → 安装** 里填仓库地址。
-
-装完到 **Providers** 页面点要用的那张卡的「连接」：
-
-- 选 **浏览器登录**：弹出窗口 → 登录 → 关掉窗口，卡片会自动变成你的昵称。
-- 或选 **API Key**：MonkeyCode 到平台「OhMyAgent」页面生成 Key（`oma_…` 与签名密钥一起粘）；百智云到 `ai-models.app.baizhi.cloud/console/keys` 取一把 `sk-…`。
-
-> MonkeyCode 的 API Key 与签名密钥是两个值，缺签名密钥每个请求都会被 403 —— 粘贴完整 JSON 最稳。
-
-### 命令行
-
-```bash
-# 从仓库源码
-magpie plugin add github:MYCF711/magpie-monkeycode
-
-# 本地目录（自己改了代码）
-magpie plugin add /path/to/magpie-monkeycode
-```
-
----
-
-## 常见问题
-
-**为什么登录后卡片显示「剩余额度未知」？**
-额度接口只认网页登录态（HttpOnly cookie），不认 API Key。用 API Key 登录的账号能发消息，但查不到额度/积分；点卡片上的「改 Key」补填 session cookie，或改用浏览器登录。
-
-**为什么三个渠道不能合一张卡？**
-MonkeyCode 国内站与国际站是同一程序的两套部署，账号池不互通；百智云是另一家公司、另一套账号。合成一张卡会让其中两家永远用不了。
-
-**为什么没有「自动续期」？**
-两家的凭据都是登录后一次性签发的长期静态材料，上游没有 refresh 端点。写一个续期只会在每半小时发一次注定失败的请求。
-
-**模型列表怎么和平台上不一样？**
-MonkeyCode 网关没有模型列表接口（405），插件里的表是快照；百智云有远端目录，登录后会跟着平台变。
-
-**签名是什么？我要自己算吗？**
-不用。签名密钥（`signing_secret`）在浏览器登录时和 Key 一起签发；手工录 Key 时把两个值都粘进来就行。百智云不需要签名。
-
----
-
-## 参考源
-
-| 来源 | 用在哪 |
-|---|---|
-| [iJetLi/dsh-providers-hub](https://github.com/iJetLi/dsh-providers-hub)（MIT） | MonkeyCode 与百智云的协议取证：网关地址、签名算法、平台接口、PoW 验证题、额度口径 |
-| [Betsy20/magpie-Jet-Hub](https://github.com/Betsy20/magpie-Jet-Hub) | 最初要提取的 magpie 适配层 |
-| [MYCF711/magpie-plugin-scaffold](https://github.com/MYCF711/magpie-plugin-scaffold)（MIT） | 九钩子骨架、检查脚本、`browser-login` 与 `quota` 工具 |
-
-协议细节、取证行号与「为什么不这么做」写在 [docs/internals.md](./docs/internals.md)。
-
-> 更新记录：[CHANGELOG.md](./CHANGELOG.md)
-
-## 许可
-
-[MIT](./LICENSE)。MonkeyCode 本身是 AGPL-3.0 的开源项目，与本插件无隶属关系。
+- 新增 `monkeycode`（monkeycode-ai.com）与 `monkeycodeintl`（monkeycode-ai.net）两个供应商，各自独立的登录态与账号池
+- 登录两条路：浏览器登录（插件开一次性的受控窗口，登录完成后自动把网页会话换成网关凭据）与 API Key 录入（粘贴 `{"access_token":"oma_…","signing_secret":"…"}`，或 `oma_…:密钥`）
+- 推理走 Anthropic Messages，按网关要求对每个请求的 prompt 现算 `X-OhMyAgent-Signature`（改 body 后签名跟着重算）
+- 模型目录内置 9 条（basic / pro / ultra 三档额度的 deepseek 前缀模型 + 逐次扣积分的 deepseek 与 GLM-5）；网关没有远端目录接口，所以不假装能拉新
+- 额度卡片：每日额度（计费 token）与积分余额两条读数，订阅档位（Basic / Pro / Ultra）显示在套餐名上
+- 每日签到：自动解开厂商的 PoW 验证题后签到，已在签过的不发写请求；验证题形态变了就如实回报「需要手动签到」
+- 没有续期端点：凭据是长期静态材料，插件不会每隔半小时发一次注定失败的刷新请求

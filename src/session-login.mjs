@@ -83,14 +83,30 @@ async function cdpCookies(pageWsUrl) {
   }
 }
 
-/** 从 cookie 列表里挑出会话 cookie 的值。 */
-function sessionCookieOf(cookies, name) {
+/**
+ * 从 cookie 列表里挑出需要的会话 cookie，拼成 `Cookie` 头。
+ *
+ * @param {Array} cookies
+ * @param {string[]} names 必须**全部**到齐才算登录完成
+ * @param {string[]} [domains] 只认这些域（不含子域），不传则不限制
+ * @returns {string | undefined}
+ */
+function sessionCookieOf(cookies, names, domains) {
+  const wanted = new Set(names)
+  const allow = domains === undefined ? undefined : new Set(domains.map((d) => d.replace(/^\./, "").toLowerCase()))
+  const found = new Map()
   for (const cookie of cookies ?? []) {
-    if (cookie?.name !== name) continue
-    if (typeof cookie.value !== "string" || cookie.value === "") continue
-    return `${name}=${cookie.value}`
+    if (!cookie || typeof cookie.value !== "string" || cookie.value === "") continue
+    if (!wanted.has(cookie.name)) continue
+    if (allow !== undefined) {
+      const domain = typeof cookie.domain === "string" ? cookie.domain.replace(/^\./, "").toLowerCase() : ""
+      if (!allow.has(domain)) continue
+    }
+    // 同名多域时保留第一个（调用方传了 domains 就不会撞）。
+    if (!found.has(cookie.name)) found.set(cookie.name, cookie.value)
   }
-  return undefined
+  for (const name of names) if (!found.has(name)) return undefined
+  return names.map((name) => `${name}=${found.get(name)}`).join("; ")
 }
 
 /**
@@ -107,7 +123,18 @@ function sessionCookieOf(cookies, name) {
  * @param {AbortSignal} [options.signal]
  * @param {object} [options.browser] 测试注入
  */
-export async function browserLogin({ url, cookieName, timeoutMs = BROWSER_LOGIN_TIMEOUT_MS, accept, signal, browser = findBrowser() }) {
+export async function browserLogin({
+  url,
+  cookieName,
+  cookieNames,
+  cookieDomains,
+  timeoutMs = BROWSER_LOGIN_TIMEOUT_MS,
+  accept,
+  signal,
+  browser = findBrowser(),
+}) {
+  // 单名（MonkeyCode）与多名（百智云要 sl-session + baizhi_session）两种用法。
+  const names = Array.isArray(cookieNames) && cookieNames.length > 0 ? cookieNames : [cookieName]
   if (!browser?.path) throw new Error("没有可用的 Chromium 浏览器（Chrome / Edge / 国产 Chromium 都行）")
 
   const profile = mkdtempSync(join(tmpdir(), "magpie-session-login-"))
@@ -148,7 +175,7 @@ export async function browserLogin({ url, cookieName, timeoutMs = BROWSER_LOGIN_
     while (Date.now() < deadline) {
       if (signal?.aborted) throw new Error("登录已取消")
       const cookies = await cdpCookies(pageWs).catch(() => [])
-      const cookie = sessionCookieOf(cookies, cookieName)
+      const cookie = sessionCookieOf(cookies, names, cookieDomains)
       // 没有会话就继续等；有会话但换不到 Key（匿名会话）也继续等 ——
       // 用户可能只是还没在窗口里点完登录。
       if (cookie !== undefined && await accept(cookie)) return { cookie, browser: browser.name }

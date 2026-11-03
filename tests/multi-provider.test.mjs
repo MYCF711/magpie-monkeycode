@@ -92,18 +92,33 @@ test("chat.headers 只标记自己的 provider", async () => {
   assert.equal(third.headers["x-baizhi-session"], "s2")
 })
 
-test("三家都声明了浏览器登录与 API Key 两条入口，且 authorize 立刻返回", async () => {
+test("三家都同时提供 API Key 与至少一种 oauth，且每个 authorize 都立刻返回", async () => {
   for (const factory of [entry.MonkeyCodeAuthPlugin, entry.MonkeyCodeIntlAuthPlugin, entry.BaizhiAuthPlugin]) {
     const plugin = await factory({ client: {} })
-    const types = plugin.auth.methods.map((method) => method.type).sort()
-    assert.deepEqual(types, ["api", "oauth"])
-    const oauth = plugin.auth.methods.find((method) => method.type === "oauth")
-    // authorize() 不许在返回前等用户登录（那会和 magpie 死锁）。
-    const started = Date.now()
-    const flow = await oauth.authorize()
-    assert.ok(Date.now() - started < 1000, "authorize 必须立刻返回")
-    assert.equal(typeof flow.callback, "function")
-    assert.equal(flow.opened, true, "窗口由插件自己打开，别让 magpie 再开一个")
-    assert.ok(flow.url.startsWith("https://"))
+    const types = plugin.auth.methods.map((method) => method.type)
+    assert.ok(types.includes("api"), "每家都要能直接粘 Key")
+    assert.ok(types.includes("oauth"), "每家都要有浏览器登录")
+    for (const method of plugin.auth.methods) {
+      if (method.type !== "oauth") continue
+      // authorize() 不许在返回前等用户登录（那会和 magpie 死锁）。
+      const started = Date.now()
+      const flow = await method.authorize()
+      assert.ok(Date.now() - started < 1000, `${method.label}: authorize 必须立刻返回`)
+      assert.equal(typeof flow.callback, "function")
+      assert.equal(flow.opened, true, "窗口由插件自己打开，别让 magpie 再开一个")
+      assert.ok(flow.url.startsWith("https://"))
+    }
+  }
+})
+
+test("MonkeyCode 提供「用百智云账号开通」入口（SSO，不是另存一个百智云账号）", async () => {
+  for (const factory of [entry.MonkeyCodeAuthPlugin, entry.MonkeyCodeIntlAuthPlugin]) {
+    const plugin = await factory({ client: {} })
+    const labels = plugin.auth.methods.map((method) => method.label)
+    assert.ok(labels.some((label) => label.includes("百智云账号开通")), "缺 SSO 入口")
+    const sso = plugin.auth.methods.find((method) => method.label.includes("用百智云账号开通"))
+    const flow = await sso.authorize()
+    // 窗口开在百智云控制台：用户在里面登录/换号。
+    assert.equal(flow.url, "https://baizhi.cloud/console/")
   }
 })

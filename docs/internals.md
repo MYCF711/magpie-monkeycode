@@ -78,12 +78,41 @@ oma_…                                             裸 token（缺密钥，请�
 
 解析层**不校验前缀**（`oma_` 不是白名单），只要求 token 形状 `^[A-Za-z0-9_.\-/+=]{16,}$` —— 上游将来换前缀时，写死前缀会把新 Key 直接判成「凭据不完整」。
 
+### 用百智云账号开通 MonkeyCode（OAuth SSO）
+
+MonkeyCode 的登录页第一项就是「百智云登录 - 推荐」，它是一段可以直接 GET 的入口
+（2026-11-03 从登录页 `<a href>` 与 302 链实测）：
+
+```
+GET https://monkeycode-ai.com/api/v1/users/login
+  → 302 https://baizhi.cloud/oauth/authorize?client_id=monkeycode-ai
+        &redirect_uri=<monkeycode>/api/v1/users/baizhi/callback
+        &response_type=code&scope=user+phone&state=<uuid>
+  → 百智云看 cookie：已登录就直接 302 回 callback?code=…
+  → MonkeyCode 签发自己的 `monkeycode_ai_session`
+```
+
+所以只要有百智云的会话 cookie，就能在受控浏览器里**零交互**换出一个 MonkeyCode 账号
+（首次登录由 MonkeyCode 自动建号）。插件里有两条入口：
+
+- **用百智云账号开通**：窗口开在 `baizhi.cloud/console/`，用户登录/换号，插件读到两枚
+  cookie 后在**无头**浏览器里注入 cookie、访问上面的入口，等 `monkeycode_ai_session`
+  出现再换网关凭据；
+- **从已登录的百智云账号批量开通**：读 magpie 账号库（`~/.config/magpie/plugin-auth.json`）
+  里 `baizhi` 条目的 `session_cookie`，每次调用导入一个没导过的，已导入的记在
+  `~/.cache/magpie/monkeycode-imported.json`。
+
+⚠ 两枚 cookie 缺一不可：`sl-session`（设备/风控）+ `baizhi_session`（登录）。只带
+`baizhi_session` 时 `/api/v1/user/profile` 会 401。而且 `sl-session` 同名有三枚，
+必须按 `domain === 'baizhi.cloud'` 精确匹配 —— 另两枚属于 `ai-models.app.baizhi.cloud`
+与 `agent-toolkit.app.baizhi.cloud`。
+
 ### 登录页
 
 两家的登录窗口都直接开各自的 `/login`，而不是首页或商场的深链：
 
 - MonkeyCode：`https://monkeycode-ai.com/login`（登录方式默认就是「百智云登录 - 推荐」）；
-- 百智云：`https://baizhi.cloud/console/login`。
+- 百智云：`https://baizhi.cloud/console/`（`/console/login` 是 404，上游用的也是 `/console`）。
 
 ⚠ 开 `ai-models.app.baizhi.cloud/console/keys` 会得到一片空白 +「登录状态已失效」——
 那个 SPA 拿不到平台登录态时会 `location.replace("/")` 再渲染失败页，它**没有登录入口**。
