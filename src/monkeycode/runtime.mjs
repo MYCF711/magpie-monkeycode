@@ -25,6 +25,7 @@ import { profileDirFor, readCookiesSilently, startBrowserLogin } from "../sessio
 
 import { signInWithBaizhiSession } from "./sso-import.mjs"
 import { readDesktopMonkeyCodeSession } from "./desktop-session.mjs"
+import { loginWithPassword } from "./password-login.mjs"
 import { KNOWN_CONTEXT, isStale, prettyModelName, readCatalog, refreshCatalog } from "./catalog.mjs"
 import { AGREE_PROTOCOL_JS } from "../baizhi/runtime.mjs"
 
@@ -334,6 +335,72 @@ export function makePlugin(site) {
             type: "api",
             label: `${site.displayName} API Key`,
             placeholder: '{"access_token":"oma_…","signing_secret":"…"}',
+          },
+          {
+            type: "oauth",
+            label: `${site.displayName} 账号密码登录`,
+            /**
+             * **纯 API 登录，不开窗口** —— 满足「我不要微信扫码，我要观猹账号」。
+             *
+             * 链路见 `password-login.mjs`：captcha 挑战 → 本地解 PoW → redeem →
+             * `POST /api/v1/users/password-login {email,password,captcha_token}` → Set-Cookie。
+             * 桌面客户端的 `mc_password_login` 走的就是这一条。
+             *
+             * 两个站都实测过：假账号会如实回「账号或密码不对（上游 code 10606）」，
+             * 说明验证码与字段全对，剩下只取决于账号密码本身。
+             */
+            get prompts() {
+              return [
+                { type: "text", key: "email", message: "登录邮箱", placeholder: "you@example.com" },
+                { type: "text", key: "password", message: "密码", placeholder: "只用于这一次登录，不写日志" },
+              ]
+            },
+            async ask(inputs) {
+              const filled = (key) => inputs !== null && typeof inputs === "object" && Object.prototype.hasOwnProperty.call(inputs, key)
+              if (!filled("email")) return this.prompts[0]
+              if (!filled("password")) return this.prompts[1]
+              return null
+            },
+            async authorize(inputs) {
+              const email = typeof inputs?.email === "string" ? inputs.email.trim() : ""
+              const password = typeof inputs?.password === "string" ? inputs.password : ""
+              // 立刻返回（铁律 2）：网络请求全在 callback。
+              return {
+                url: site.loginUrl ?? `${site.platformBaseUrl}/`,
+                // 真的不开窗：opened:true 只是别让 magpie 去拉起系统浏览器。
+                opened: true,
+                method: "auto",
+                instructions: "正在用账号密码登录（纯接口，不会开窗口）。",
+                async callback() {
+                  if (email.length === 0 || password.length === 0) {
+                    return { type: "failed", error: "账号或密码没填" }
+                  }
+                  try {
+                    const session = await loginWithPassword({ email, password, site })
+                    if (!session.ok) return { type: "failed", error: session.error }
+                    const issued = await exchangeSessionForKey(session.cookie, site)
+                    if (!issued.ok) {
+                      return { type: "failed", error: `登录成功，但换取网关凭据失败（${issued.error}）` }
+                    }
+                    const profile = await fetchProfile(session.cookie, site)
+                    return {
+                      type: "success",
+                      access: JSON.stringify({
+                        access_token: issued.apiKey,
+                        signing_secret: issued.signingSecret,
+                        session_cookie: session.cookie,
+                        ...(profile?.userId === undefined ? {} : { user_id: profile.userId }),
+                      }),
+                      expires: 0,
+                      accountId: profile?.nickname ?? "",
+                      uid: profile?.userId ?? "",
+                    }
+                  } catch (error) {
+                    return { type: "failed", error: error instanceof Error ? error.message : String(error) }
+                  }
+                },
+              }
+            },
           },
           // ⚠ 「从本机客户端导入」**只在国内站提供**。桌面客户端导出的
           // `monkeycode-cookies.json` 是**国内站**的会话；拿它去打国际站的

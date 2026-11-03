@@ -27,7 +27,10 @@
 
 | 用途 | 端点 | 备注 |
 |---|---|---|
-| 账号密码登录 | `POST /api/v1/users/password-login` | 桌面命令 `mc_password_login` 对应；body 字段名仍待定（见 0.4） |
+| 账号密码登录 | `POST /api/v1/users/password-login` | body **`{email, password, captcha_token}`**（字段名从国际站前端 bundle 逐字取出）；**必须先过 captcha**，不带 token 回 **403** 而不是 400 |
+| 验证码挑战 | `POST /api/v1/public/captcha/challenge` | 201 → `{token, challenge:{c,s,d}}`；c 道 PoW，本地用 `solveChallenge` 解 |
+| 验证码兑换 | `POST /api/v1/public/captcha/redeem` | body `{token, solutions}` → 201 `{token:"…", success:true}`，这个 token 就是 `captcha_token` |
+| 账号密码不对 | — | 上游回 `{"code":10606,"message":"登录失败"}` —— 这个码要映射成「账号或密码不对」，不要说成验证码问题 |
 | 网页登录（内嵌 WebView） | 命令 `mc_web_login` / `mc_web_login_cancel` | 桌面用 WebView2 完成，等价于我们的受控浏览器 |
 | 微信扫码 | 命令 `baizhi_wechat_start` / `baizhi_wechat_poll` | start 取二维码、poll 轮询结果 —— **纯 API，可无窗完成** |
 | 当前用户 | `GET /api/v1/users/status` | 返回 `data.user.{id,name}`（是 `name` 不是 `nickname`） |
