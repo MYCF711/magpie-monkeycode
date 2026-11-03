@@ -15,7 +15,8 @@ import { createUsageCache } from "../usage-cache.mjs"
 
 import { parseCredential, hasToken } from "../credential.mjs"
 import { findBrowser } from "../browser-login.mjs"
-import { BROWSER_LOGIN_TIMEOUT_MS, profileDirFor, startBrowserLogin } from "../session-login.mjs"
+import { openInSystemBrowser } from "../system-open.mjs"
+import { BROWSER_LOGIN_TIMEOUT_MS, openControlledBrowser, profileDirFor, startBrowserLogin } from "../session-login.mjs"
 import {
   exchangeSessionForKey, fetchProfile, fetchRemoteModels, fetchUsage, fetchWallet,
 } from "./credits.mjs"
@@ -127,6 +128,14 @@ const CONSOLE_DOMAINS = Object.freeze(["baizhi.cloud"])
 async function finishSignIn(cookie, site, { fetchImpl } = {}) {
   const exchanged = await exchangeSessionForKey(cookie, site, { fetchImpl })
   if (!exchanged.ok) {
+    // 账号下一把 sk- 都没有：**把建 Key 的页面直接打开**。
+    // magpie 的错误面板里链接不可点，只写 URL 等于让用户手抄。
+    //
+    // 优先用受控浏览器（持久 profile 里就是刚登进去的登录态，打开就是已登录的
+    // 建 Key 页）；它起不来再退回系统默认浏览器。
+    if (exchanged.needsKeyCreation === true && typeof exchanged.keysUrl === "string") {
+      await openKeyPage(exchanged.keysUrl)
+    }
     return { type: "failed", error: `百智云：已读到网页登录态，但换取 API Key 失败（${exchanged.error}）` }
   }
   const profile = await fetchProfile(cookie, site, { fetchImpl })
@@ -169,6 +178,29 @@ async function startBaizhiBrowserLogin(site, { signal, browser } = {}) {
       return true
     },
   })
+}
+
+/**
+ * 打开「建 API Key」页面，等用户点一次「新建」。
+ *
+ * 用**受控浏览器 + 同一个持久 profile**：那里就是刚登录的百智云控制台，
+ * 打开即是已登录状态，用户只需要点一下「新建」。窗口故意不关 —— 用户建完
+ * 自己关掉，回来点 magpie 的「重试」即可（重试会重新读一次 key 列表）。
+ */
+async function openKeyPage(keysUrl) {
+  if (process.env.MAGPIE_PLUGIN_DISABLE_BROWSER === "1") return
+  const browser = findBrowser()
+  if (!browser?.path) {
+    // 连浏览器都没有：交给系统默认浏览器，至少地址是能点的。
+    openInSystemBrowser(keysUrl)
+    return
+  }
+  try {
+    await openControlledBrowser({ url: keysUrl, profileDir: profileDirFor("baizhi"), browser })
+    // 不 close：留给用户操作。
+  } catch {
+    openInSystemBrowser(keysUrl)
+  }
 }
 
 /** 手动粘贴的兜底说明：受控窗口起不来时，用户还能自己把 cookie 交进来。 */

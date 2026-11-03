@@ -93,24 +93,54 @@ export async function fetchUsage(cookie, site, { period = "month", fetchImpl = f
 export async function exchangeSessionForKey(cookie, site, { fetchImpl = fetch, timeoutMs = 30_000 } = {}) {
   const normalized = cookieOf({ session_cookie: cookie }, site.sessionCookies, site.sessionCookie)
   if (normalized === undefined) return { ok: false, error: "网页登录态为空" }
-  const result = await platformRequest(
+
+  /** 列出账号下所有 key，挑第一把可用的 `sk-`。 */
+  const pickActive = async () => {
+    const listed = await platformRequest(
+      normalized,
+      `${site.consoleBaseUrl}${site.consoleApiKeysPath}`,
+      { method: "GET", fetchImpl, timeoutMs },
+    )
+    if (!listed.ok) return { ok: false, error: listed.error, fatal: true }
+    const unwrapped = unwrapEnvelope(listed.data)
+    if (!unwrapped.ok) return { ok: false, error: unwrapped.error, fatal: true }
+    for (const item of readArrayField(unwrapped.value, "items")) {
+      const key = typeof item.api_key === "string" ? item.api_key.trim() : ""
+      const status = typeof item.status === "string" ? item.status : "active"
+      if (status !== "active") continue
+      if (/^sk-[A-Za-z0-9_-]{16,}$/.test(key)) return { ok: true, apiKey: key }
+    }
+    return { ok: false, error: "empty" }
+  }
+
+  const existing = await pickActive()
+  if (existing.ok) return existing
+  if (existing.fatal) return { ok: false, error: existing.error }
+
+  // 账号下一把 sk- 都没有 —— 直接替用户建一把。
+  // 上游的注释说「用户只要登进去，插件就能自动建号」，靠的就是这一步；
+  // 让别人先去控制台点「新建」再回来，是这条链上唯一需要人动手的地方。
+  const created = await platformRequest(
     normalized,
     `${site.consoleBaseUrl}${site.consoleApiKeysPath}`,
-    { method: "GET", fetchImpl, timeoutMs },
+    { method: "POST", body: { name: "magpie" }, fetchImpl, timeoutMs },
   )
-  if (!result.ok) return { ok: false, error: result.error }
-  const unwrapped = unwrapEnvelope(result.data)
-  if (!unwrapped.ok) return { ok: false, error: unwrapped.error }
-  for (const item of readArrayField(unwrapped.value, "items")) {
-    const key = typeof item.api_key === "string" ? item.api_key.trim() : ""
-    const status = typeof item.status === "string" ? item.status : "active"
-    if (status !== "active") continue
-    if (/^sk-[A-Za-z0-9_-]{16,}$/.test(key)) return { ok: true, apiKey: key }
+  if (created.ok) {
+    const unwrapped = unwrapEnvelope(created.data)
+    const record = unwrapped.ok ? unwrapped.value : undefined
+    const createdKey = typeof record?.api_key === "string" ? record.api_key.trim() : ""
+    if (/^sk-[A-Za-z0-9_-]{16,}$/.test(createdKey)) return { ok: true, apiKey: createdKey, created: true }
+    // 建成功但报文里没直接给 api_key：再列一次（有的接口只回 id）。
+    const again = await pickActive()
+    if (again.ok) return { ok: true, apiKey: again.apiKey, created: true }
   }
+
   return {
     ok: false,
-    error: "这个大模型商店账号下还没有可用的 sk- 密钥 —— 请打开 "
-      + "https://ai-models.app.baizhi.cloud/console/keys 新建一把，或改用「手动填写 API Key」",
+    needsKeyCreation: true,
+    keysUrl: `${site.consoleBaseUrl}/console/keys`,
+    error: "这个大模型商店账号下还没有可用的 sk- 密钥，插件自动新建也没成功 —— "
+      + `请打开 ${site.consoleBaseUrl}/console/keys 点一次「新建」，然后回来「重试」`,
   }
 }
 
