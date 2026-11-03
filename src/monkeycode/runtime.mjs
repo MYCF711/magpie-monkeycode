@@ -40,7 +40,13 @@ function configModels(site) {
   const cached = readCatalog(site.id)
   if (cached !== undefined && cached.models.length > 0) {
     const out = {}
-    for (const model of cached.models) {
+    // 只列**这个账号真的能用**的：探测过的条目带 usable，未探测（老缓存）视为可用。
+    const visible = cached.models.filter((model) => model.usable !== false)
+    if (visible.length === 0) {
+      // 探测过但一条都不行 —— 别列 21 个点哪个都 403 的假选项。
+      return {}
+    }
+    for (const model of visible) {
       out[model.id] = {
         id: model.id,
         // 显示名在读取时算：老缓存里没有 displayName 也能立刻变好看，不用重拉目录。
@@ -292,47 +298,67 @@ export function makePlugin(site) {
               const profileDir = profileDirFor("baizhi")
               // 立刻返回、后台起飞：等到 callback 才启动的话，用户会先对着
               // 一块「正在开始登录…」而屏幕上一个窗口都没有。
-              // ⚠ 这个后台 Promise 必须**永不 reject**：magpie 不一定会调 callback
-              //（用户可能直接取消），悬空的 rejection 会变成未捕获异常 —— 真机上
-              // 这类异常足以把插件宿主带崩。错误先收进 flowError，由 callback 取。
+              // ⚠ 先真的把「登录态/窗口」拿到手，再决定 opened。
+              //
+              // 后台起飞 + 立刻 opened:true 的组合在 magpie 宿主里会翻车：spawn 失败时
+              // 既没窗口、又因为 opened:true 而没人去开系统浏览器（2026-11-04 真机卡死）。
+              // 这里最多等 12 秒（静默读 1-2 秒 + 窗口启动 1-2 秒）：
+              //   · 静默命中 profile → 不需要窗口，opened:true 但什么都不会弹
+              //   · 窗口起来了     → opened:true
+              //   · 起不来         → opened:false，交给 magpie 开系统浏览器
               let flowError = ""
-              const startFlow = (async () => {
-                // 单测门闩：不许真的拉起浏览器。
-                if (process.env.MAGPIE_PLUGIN_DISABLE_BROWSER === "1") {
-                  throw new Error("受控浏览器未启动（测试环境）")
-                }
-                // ① 先静默：profile 里已有登录态就直接用（不弹窗、不等用户）。
-                //    这就是「一个百智云账号，两站都能进」的那一步。
-                const silent = await readCookiesSilently({ cookieNames: names, cookieDomains: domains, profileDir })
-                if (silent !== undefined) return silent
-                // ② 没有才让人登一次（持久 profile：这次登完，下次静默命中）。
-                const flow = await startBrowserLogin({
-                  url: "https://baizhi.cloud/console/",
-                  cookieNames: names,
-                  cookieDomains: domains,
-                  profileDir,
-                  timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
-                  async accept() {
-                    return true
-                  },
-                })
-                const { cookie } = await flow.wait()
-                return cookie
-              })().catch((error) => {
+              let ready
+              try {
+                ready = await Promise.race([
+                  (async () => {
+                    // 单测门闩：不许真的拉起浏览器。
+                    if (process.env.MAGPIE_PLUGIN_DISABLE_BROWSER === "1") {
+                      throw new Error("受控浏览器未启动（测试环境）")
+                    }
+                    // ① 先静默：profile 里已有登录态就直接用（不弹窗、不等用户）。
+                    //    这就是「一个百智云账号，两站都能进」的那一步。
+                    const silent = await readCookiesSilently({ cookieNames: names, cookieDomains: domains, profileDir })
+                    if (silent !== undefined) return { mode: "silent", cookie: silent }
+                    // ② 没有才让人登一次（持久 profile：这次登完，下次静默命中）。
+                    const flow = await startBrowserLogin({
+                      url: "https://baizhi.cloud/console/",
+                      cookieNames: names,
+                      cookieDomains: domains,
+                      profileDir,
+                      timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
+                      async accept() {
+                        return true
+                      },
+                    })
+                    return { mode: "window", flow }
+                  })(),
+                  new Promise((_, reject) => setTimeout(() => reject(new Error("登录窗口启动超时（12 秒）")), 12_000)),
+                ])
+              } catch (error) {
                 flowError = error instanceof Error ? error.message : String(error)
-                return undefined
-              })
+                ready = undefined
+              }
+              const bail = ready === undefined
               return {
                 url: "https://baizhi.cloud/console/",
-                // 窗口在 authorize 里就支起来（见下面 startFlow），这里说明只讲怎么用。
-                instructions: "在打开的窗口里登录你的百智云账号；登录完成后本页会自动开通 MonkeyCode。"
-                  + "登录过一次之后，另一站会直接复用这个登录态（同一 profile），不用再登。",
+                // 起不来就让 magpie 去开系统浏览器 —— 用户至少能把地址打开。
+                opened: !bail,
+                instructions: bail
+                  ? `受控浏览器没能启动（${flowError || "未知原因"}）。已在你的默认浏览器打开 ${site.platformBaseUrl}，`
+                    + "登录后回到这里点「重试」；或者改用「API Key」方式粘贴一行 JSON："
+                    + '{"session_cookie":"sl-session=…; baizhi_session=…"}'
+                  : "在打开的窗口里登录你的百智云账号；登录完成后本页会自动开通 MonkeyCode。"
+                    + "登录过一次之后，另一站会直接复用这个登录态（同一 profile），不用再登。",
                 method: "auto",
-                opened: true,
                 async callback() {
-                  const baizhiCookie = await startFlow
-                  if (baizhiCookie === undefined) {
+                  if (bail) {
                     return { type: "failed", error: `用百智云账号开通失败：${flowError || "受控浏览器没有启动"}` }
+                  }
+                  let baizhiCookie
+                  try {
+                    baizhiCookie = ready.mode === "silent" ? ready.cookie : (await ready.flow.wait()).cookie
+                  } catch (error) {
+                    return { type: "failed", error: error instanceof Error ? error.message : String(error) }
                   }
                   try {
                     const signed = await signInWithBaizhiSession(baizhiCookie, site)
@@ -474,7 +500,8 @@ export function makePlugin(site) {
           if (credential === undefined) return { error: "未登录", windows: [] }
           // 目录过期就后台刷一次（不 await：额度卡片的响应不能被目录拖慢）。
           if (isStale(readCatalog(site.id)) && credential.session_cookie !== undefined) {
-            refreshCatalog(credential.session_cookie, site).catch(() => {})
+            // 带上网关凭据：刷新时顺带探测「这个号到底能用哪些模型」。
+            refreshCatalog(credential.session_cookie, site, { credential }).catch(() => {})
           }
           const key = credential.user_id ?? credential.access_token
           try {

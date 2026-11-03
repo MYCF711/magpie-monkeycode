@@ -192,11 +192,80 @@ export function isStale(catalog, now = Date.now()) {
   return catalog === undefined || now - catalog.fetchedAt > CATALOG_TTL_MS
 }
 
+
+// ── 可用性探测：平台目录列的是「上架了什么」，不是「你这个号能用什么」──
+//
+// 2026-11-04 实测：通过百智云 SSO 新建的账号，目录里 21 条**全部 403 Forbidden**
+// （账号 `teams: []`、没有任何订阅）。把 21 条原样列给用户 = 点哪个都失败。
+// 所以拉完目录后用网关自己探一遍，只留真的能出字的那些。
+
+/**
+ * 探一条：发一个 1 token 的最小请求，看网关认不认。
+ *
+ * @returns {Promise<boolean>} 只有真的 200 才算能用（403/404/超时一律不算）
+ */
+export async function probeModel(credential, site, model, { fetchImpl = fetch, timeoutMs = 20_000 } = {}) {
+  if (typeof credential?.access_token !== "string" || credential.access_token.length === 0) return false
+  if (typeof credential?.signing_secret !== "string" || credential.signing_secret.length === 0) return false
+  const { createHmac } = await import("node:crypto")
+  const prompt = "ping"
+  const signature = "v1=" + createHmac("sha256", credential.signing_secret).update(prompt, "utf8").digest("hex")
+  const body = JSON.stringify({
+    model: model.apiId,
+    system: prompt,
+    messages: [{ role: "user", content: "hi" }],
+    max_tokens: 1,
+    stream: true,
+  })
+  try {
+    const response = await fetchImpl(`${site.gatewayBaseUrl}/messages`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "text/event-stream",
+        "anthropic-version": "2023-06-01",
+        "x-api-key": credential.access_token,
+        "X-OhMyAgent-Signature": signature,
+      },
+      body,
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    // 读掉响应体，避免连接泄漏；内容我们不关心。
+    await response.text().catch(() => "")
+    return response.status === 200
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 批量探测（并发 4）。每个模型多打一次 1 token 的请求，代价可接受。
+ *
+ * @returns {Promise<Array<object>>} 每条加上 `usable: boolean`
+ */
+export async function probeCatalog(credential, site, models, { concurrency = 4, probe = probeModel } = {}) {
+  const out = []
+  for (let i = 0; i < models.length; i += concurrency) {
+    const batch = models.slice(i, i + concurrency)
+    const results = await Promise.all(batch.map(async (model) => ({
+      ...model,
+      usable: await probe(credential, site, model).catch(() => false),
+    })))
+    out.push(...results)
+  }
+  return out
+}
+
 /**
  * 拉一次并落盘（后台用）。永不抛错 —— 目录刷新失败不该打断任何用户操作。
  */
 export async function refreshCatalog(cookie, site, options = {}) {
   const result = await fetchCatalog(cookie, site, options)
   if (!result.ok) return false
-  return writeCatalog(site.id, result.models)
+  // 有网关凭据就顺手探一遍可用性：目录说的是「上架了什么」，
+  // 这里才回答「你这个号能用什么」。
+  const models = options.credential === undefined
+    ? result.models
+    : await probeCatalog(options.credential, site, result.models, options)
+  return writeCatalog(site.id, models)
 }

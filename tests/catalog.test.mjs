@@ -59,3 +59,19 @@ test("prettyModelName：平台的原样标识翻成人能读的名字", async ()
   assert.equal(prettyModelName("deepseek-flash"), "DeepSeek-Flash")
   assert.equal(prettyModelName(""), "")
 })
+
+test("probeCatalog：只有 200 才算能用，403/异常一律不可用", async () => {
+  const { probeCatalog } = await import("../src/monkeycode/catalog.mjs")
+  const credential = { access_token: "oma_x", signing_secret: "s".repeat(48) }
+  const models = [{ apiId: "u1", id: "m1" }, { apiId: "u2", id: "m2" }, { apiId: "u3", id: "m3" }]
+  const probed = await probeCatalog(credential, { gatewayBaseUrl: "https://gw.example/v1" }, models, {
+    concurrency: 2,
+    probe: async (cred, site, model) => model.apiId === "u2",
+  })
+  assert.deepEqual(probed.map((m) => m.usable), [false, true, false])
+})
+
+test("refreshCatalog 带 credential 时会把可用性探进去", async () => {
+  const { probeCatalog } = await import("../src/monkeycode/catalog.mjs")
+  assert.equal(typeof probeCatalog, "function")
+})

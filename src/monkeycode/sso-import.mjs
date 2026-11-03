@@ -270,8 +270,12 @@ export async function signInWithBaizhiSession(baizhiCookie, site, { fetchImpl = 
     const issued = await exchangeSessionForKey(cookieHeader, site, { fetchImpl, timeoutMs: 30_000 })
     if (!issued.ok) throw new Error(`已拿到 MonkeyCode 会话，但换取网关凭据失败（${issued.error}）`)
     const profile = await fetchProfile(cookieHeader, site, { fetchImpl, timeoutMs: 30_000 })
-    // 顺手把平台目录拉一次落盘：模型 id 是平台下发的 UUID，内置快照早就对不上了。
-    await refreshCatalog(cookieHeader, site, { fetchImpl }).catch(() => {})
+    // 顺手把平台目录拉一次落盘，并探测「这个号到底能用哪些」：
+    // 模型 id 是平台下发的 UUID（内置快照早对不上），而上架 ≠ 有权限。
+    await refreshCatalog(cookieHeader, site, {
+      fetchImpl,
+      credential: { access_token: issued.apiKey, signing_secret: issued.signingSecret, session_cookie: cookieHeader },
+    }).catch(() => {})
     return {
       credential: {
         access_token: issued.apiKey,

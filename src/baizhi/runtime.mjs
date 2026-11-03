@@ -308,24 +308,44 @@ export function makeBaizhiPlugin(site = BAIZHI) {
                   },
                 }
               }
-              // ② 后台把窗口支起来：authorize 立刻返回（面板马上有响应），
-              //    窗口在 1-2 秒内出现。等到 callback 才启动的话，用户会先对着
-              //    一块「正在开始登录…」而屏幕上一个窗口都没有（真机报障）。
+              // ② **先真的把窗口起来，再决定 opened**。
+              //
+              // 早先是「后台起飞 + 立刻 opened: true」，但 magpie 的宿主环境里
+              // spawn 不一定会成功（2026-11-04 真机：窗口没弹、面板卡在「正在开始
+              // 登录…」、又因为没有 opened:false 而没人去开系统浏览器）。
+              // 现在最多等 8 秒：起来了就 opened:true 自己等；起不来就 opened:false，
+              // 让 magpie 去开系统浏览器，并且把手动步骤写进说明。
+              let flow
               let startupError = ""
-              const pending = startBaizhiBrowserLogin(site, { browser }).catch((error) => {
+              try {
+                flow = await Promise.race([
+                  startBaizhiBrowserLogin(site, { browser }),
+                  new Promise((_, reject) => setTimeout(() => reject(new Error("浏览器启动超时（8 秒）")), 8_000)),
+                ])
+              } catch (error) {
                 startupError = error instanceof Error ? error.message : String(error)
-                return undefined
-              })
+                flow = undefined
+              }
+              if (flow === undefined) {
+                // 起不来：**这时候一定要让 magpie 去开系统浏览器**，
+                // 否则用户既没窗口、也没入口（真机卡死就是这一步缺了）。
+                const error = manualCookieHint(site, startupError || "受控浏览器没能启动")
+                return {
+                  url: site.loginUrl,
+                  opened: false,
+                  method: "auto",
+                  instructions: error,
+                  async callback() {
+                    return { type: "failed", error }
+                  },
+                }
+              }
               return {
                 url: site.loginUrl,
                 opened: true,
                 method: "auto",
                 instructions: "在打开的窗口里登录百智云控制台；登录完成后本页会自动继续（账号下需要有可用的 sk- 密钥）。",
                 async callback() {
-                  const flow = await pending
-                  if (flow === undefined) {
-                    return { type: "failed", error: manualCookieHint(site, startupError || "窗口没能启动") }
-                  }
                   try {
                     const { cookie } = await flow.wait()
                     return await finishSignIn(cookie, site)
