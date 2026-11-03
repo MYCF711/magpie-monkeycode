@@ -415,7 +415,10 @@ export function makePlugin(site) {
             async authorize() {
               return {
                 url: site.loginUrl ?? `${site.platformBaseUrl}/`,
-                instructions: "在打开的窗口里登录 MonkeyCode（可以用「百智云登录」）；登录完成后本页会自动继续。",
+                instructions: "在打开的窗口里登录 MonkeyCode。窗口里有两个入口："
+                  + "\n· 没有 MonkeyCode 账号 → 点「快速注册」（手机号/邮箱，不经过百智云，猴子自带日额度）"
+                  + "\n· 已有百智云账号 → 点「百智云登录 - 推荐」（一份身份两处通用）"
+                  + "\n登录完成后本页会自动继续。",
                 method: "auto",
                 opened: true,
                 async callback() {
