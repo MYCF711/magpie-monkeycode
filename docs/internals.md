@@ -12,16 +12,53 @@
 | provider id | `monkeycode` | `monkeycodeintl` |
 | 平台 | `https://monkeycode-ai.com` | `https://monkeycode-ai.net` |
 | 推理网关 | `https://proxy.monkeycode-ai.com/v1` | `https://proxy.monkeycode-ai.net/v1` |
-| 会话 cookie | `monkeycode_ai_session` | 同名（**未真机验证**，见下） |
+| 会话 cookie | `monkeycode_ai_session` | 同名（**推断，未读到值**，见下） |
+| 登录方式 | 微信 / 支付宝 / 抖音 / GitHub / 观猹 / 账号密码（百智云 SSO） | **GitHub / Google / 账号密码**（2026-11-04 无头读 DOM） |
+| 百智云 SSO | `GET /api/v1/users/login` → 302 `baizhi.cloud/oauth/authorize` | **不认**：302 到它自己的 `/oauth/authorize`，`client_id=` 为空 |
 | 接口路径 | `/api/v1/...` | 逐字相同 |
 
 两站是同一程序的两套部署：`GET /v1/models` 在两边都返回 405（逐字节一致的行为），平台接口路径也完全相同。
 **账号池不互通** —— 国内站的 cookie 打国际站回 401，这是上游 RPC 层真机踩过并写进注释的事实。
 
-未验证项（照抄上游标注，不当作已确认）：
+国际站已确认的事实（2026-11-04）：
 
-- 国际站换 Key 端点的响应字段、cookie 名是否与国内一致；
-- 国际站账号级登录本仓没有真机跑通（上游源码里同时存在「真机验过」与「只有国内账号」两种说法）。
+- 登录页只有 **GitHub / Google / 账号密码** 三种，页面明写「当前访问的是国际版」（无头浏览器读 `document.body.innerText`）
+- `GET /api/v1/users/login` → 302 `Location: /oauth/authorize?client_id=&redirect_uri=https%3A%2F%2Fmonkeycode-ai.net%2Fapi%2Fv1%2Fusers%2Fbaizhi%2Fcallback...`
+  —— **`client_id` 是空的，且是相对自己站点的路径**，不经过 `baizhi.cloud`
+- 把百智云会话注入一次性 Chromium 再走这条路：最终只落到国际站首页，**不会**签发国际站 session
+  ⇒ 国际站**不提供**「用百智云账号开通」入口（`src/monkeycode/runtime.mjs` 里那个 method 被 `site.id` 门住）
+- `POST /api/v1/public/captcha/challenge` 回 201、形状与国内站相同；
+  `POST /api/v1/users/password-login {email,password}` 缺 `captcha_token` 回 **403**（与国内站同一套语义）
+- 未登录时**不下发**任何会话 cookie（`/`、`/login`、`/oauth/authorize` 三条都不带 `Set-Cookie`）
+
+仍未验证项（照抄上游标注，不当作已确认）：
+
+- 国际站换 Key 端点（`/api/v1/users/ohmyagent/api-keys`）的**响应字段**是否与国内一致
+  —— 路径存在（无 cookie 回 401 而不是 404），但没有国际站账号跑完过一次
+- 国际站会话 cookie 的**名字**：`monkeycode_ai_session` 只是推断。间接证据是报错形态
+  「{user} 已登录，但 magpie 无法列出它」—— 说明 `accept()` 曾经命中过（否则会是「登录超时」）；
+  但这不足以排除「插件把别的 cookie 当成了会话」。真机判据见 AGENTS 0.7
+
+### 1.1 登录结果必须带 `refresh`（否则 magpie 一格都不存）
+
+magpie 的插件宿主（`host.js` 的 `save()`）只有两条保存出口：
+
+```js
+if ("refresh" in result)      setAuth(key, { type: "oauth", refresh, access, expires, ...extra })
+else if ("key" in result)     setAuth(key, { type: "api", key, metadata })
+```
+
+**两条都不命中时它既不保存也不报错**：`plugin-auth.json` 里没有记录，而界面照样显示「已登录」，
+紧接着的 `providers?wait=1` 里找不到这个 account，就打出
+「{user} 已登录，但 magpie 无法列出它，请反馈此问题」。
+
+本包没有 refresh 端点（凭据是长期静态材料），但**这一格必须占上**：统一由
+`src/credential.mjs` 的 `signInSuccess()` 填 `refresh`（与 `access` 同值）与 `expires: 0`。
+`tests/signin-contract.test.mjs` 锁住两件事：`signInSuccess` 一定带 `refresh`；
+**生产代码里不许再出现裸的 `type: "success"`**。
+
+这条的隐蔽性在于：国内站与百智云一直用 **API Key** 方式登录（`type: "api"`，走 api 分支），
+所以「网页登录从来没存下来过」这件事一直没被发现，直到国际站（只能用网页/密码登录）撞上。
 
 ## 2. 鉴权：两套凭据，各管一段
 
@@ -62,9 +99,24 @@ signature = "v1=" + hex(HMAC-SHA256(signing_secret, prompt))
   ↘ GET /api/v1/users/status → data.user.{id,nickname}
 ```
 
-- **为什么不能「读到 cookie 就算成功」**：窗口一开，服务端就下发匿名 `monkeycode_ai_session`。把它当登录完成，用户刚登完却看到「会话已失效」，窗口还被收掉 —— 等于白登一次。
+- **为什么不能「读到 cookie 就算成功」**：窗口一开，服务端就下发匿名 `monkeycode_ai_session`。把它当登录完成，用户刚登完却看到「会话已失效」，窗口还被收掉 —— 等于白登一次。（国际站未登录时**不下发** cookie，这一条对它退化成「读到就是登完了」，但仍按同一套链路判。）
 - **身份只用 `data.user.id`**：兑换响应里的 `id` 是「这把 Key 的记录 id」，同一账号每兑换一次就变。拿它判重会让「同一账号第二次登录」变成新账号（每登一次多一张卡 + 多签发一把 Key）。
 - 窗口是可见的 1024×800、一次性 profile，关掉即回收（含临时目录）。
+- **cookie 按本站域取**（`cookieDomains: [new URL(site.platformBaseUrl).hostname]`）：两站同名 `monkeycode_ai_session`，不过滤域就会把另一站（或持久 profile 里上一个号）的会话当自己的。
+- **登录结果必须带 `refresh`**：见 §1.1 —— 少了它，magpie 会把这次登录显示成成功、却一格都不存。
+
+### 从本机客户端导入（两个站都提供，按域判）
+
+桌面客户端（`%APPDATA%\com.chaitin.baizhi.monkeycode\`）的 `mc_base_url` 是**国内站 / 国际站二选一的一个值**，
+`monkeycode-cookies.json` 里装的是**当前那一站**的会话：
+
+- `readDesktopMonkeyCodeSession({ cookieDomains: [host] })` 只认本站；
+- 读到的是**另一站**的登录态时，报「本机桌面客户端登录的是另一个站点」，而不是把 401 甩给用户
+  让人去怀疑「桌面版登录过期了」（`domainMatches()` 去前导点后按精确/子域匹配）；
+- 没写 `domain` 的老格式放行 —— 不做无根据的排除。
+
+⚠ 这个文件会被客户端在切站 / 重登时删掉或重写（2026-11-04 真机：05:14 还在，05:43 就没有了），
+所以「读不到」是常态而非异常。
 
 ### API Key 录入
 
@@ -78,7 +130,7 @@ oma_…                                             裸 token（缺密钥，请�
 
 解析层**不校验前缀**（`oma_` 不是白名单），只要求 token 形状 `^[A-Za-z0-9_.\-/+=]{16,}$` —— 上游将来换前缀时，写死前缀会把新 Key 直接判成「凭据不完整」。
 
-### 用百智云账号开通 MonkeyCode（OAuth SSO）
+### 用百智云账号开通 MonkeyCode（OAuth SSO，**只给国内站**）
 
 MonkeyCode 的登录页第一项就是「百智云登录 - 推荐」，它是一段可以直接 GET 的入口
 （2026-11-03 从登录页 `<a href>` 与 302 链实测）：
@@ -92,8 +144,18 @@ GET https://monkeycode-ai.com/api/v1/users/login
   → MonkeyCode 签发自己的 `monkeycode_ai_session`
 ```
 
-所以只要有百智云的会话 cookie，就能在受控浏览器里**零交互**换出一个 MonkeyCode 账号
-（首次登录由 MonkeyCode 自动建号）。插件里有两条入口：
+⚠ **国际站不是这条链**（2026-11-04 实测）：
+
+```
+GET https://monkeycode-ai.net/api/v1/users/login
+  → 302 Location: /oauth/authorize?client_id=&redirect_uri=https%3A%2F%2Fmonkeycode-ai.net%2Fapi%2Fv1%2Fusers%2Fbaizhi%2Fcallback&…
+  ← 相对它自己的站点，且 client_id 为空；窗口里注入百智云会话走完只落到国际站首页
+```
+
+所以这个 method 被 `site.id === "monkeycode"` 门住：留在国际站上只会让用户对着一个
+必然超时的入口等 240 秒。国际站要登录，用它自己的 GitHub / Google / 账号密码。
+
+国内站这条路不受影响，插件里有两条入口：
 
 - **用百智云账号开通**：窗口开在 `baizhi.cloud/console/`，用户登录/换号，插件读到两枚
   cookie 后在**无头**浏览器里注入 cookie、访问上面的入口，等 `monkeycode_ai_session`

@@ -74,7 +74,7 @@ const LOGIN_AUTOPILOT_JS = `(() => {
 import {
   claimCheckin, cookieOf, exchangeSessionForKey, fetchPlan, fetchProfile, fetchWallet, PLAN_LABELS,
 } from "./credits.mjs"
-import { FALLBACK_SYSTEM, gatewayHeaders, isUsableCredential, parseBodyQuietly, parseCredential, signingPrompt } from "./signing.mjs"
+import { FALLBACK_SYSTEM, gatewayHeaders, isUsableCredential, parseBodyQuietly, parseCredential, signInSuccess, signingPrompt } from "./signing.mjs"
 
 const SDK = "@ai-sdk/anthropic"
 const MAX_OUTPUT = 64_000
@@ -271,15 +271,15 @@ async function signInWithBrowser(site, { fetchImpl, signal } = {}) {
   const cookie = credential.session_cookie
   const profile = await fetchProfile(cookie, site, { fetchImpl })
   const nickname = profile?.nickname
-  return {
-    type: "success",
+  return signInSuccess({
     // MonkeyCode 的凭据是「一次性签发的静态材料」，没有 refresh_token ——
-    // access 存整份 JSON，refresh 留空（auth.refresh 会直接返回 undefined）。
+    // 整份 JSON 进 access；refresh 由 signInSuccess 填同一份（那一格是
+    // magpie 的「存不存得下」开关，见 src/credential.mjs）。
     access: JSON.stringify({ ...credential, ...(profile?.userId === undefined ? {} : { user_id: profile.userId }) }),
     expires: 0,
     accountId: nickname ?? "",
     uid: profile?.userId ?? "",
-  }
+  })
 }
 
 /**
@@ -383,8 +383,7 @@ export function makePlugin(site) {
                       return { type: "failed", error: `登录成功，但换取网关凭据失败（${issued.error}）` }
                     }
                     const profile = await fetchProfile(session.cookie, site)
-                    return {
-                      type: "success",
+                    return signInSuccess({
                       access: JSON.stringify({
                         access_token: issued.apiKey,
                         signing_secret: issued.signingSecret,
@@ -394,7 +393,7 @@ export function makePlugin(site) {
                       expires: 0,
                       accountId: profile?.nickname ?? "",
                       uid: profile?.userId ?? "",
-                    }
+                    })
                   } catch (error) {
                     return { type: "failed", error: error instanceof Error ? error.message : String(error) }
                   }
@@ -402,11 +401,10 @@ export function makePlugin(site) {
               }
             },
           },
-          // ⚠ 「从本机客户端导入」**只在国内站提供**。桌面客户端导出的
-          // `monkeycode-cookies.json` 是**国内站**的会话；拿它去打国际站的
-          // `/api/v1/users/models` 实测一律 401（AGENTS 0.6）。国际站要登，
-          // 必须走国际站自己的登录（0.2 的一次性窗口 / 0.7 的判据）。
-          ...(site.id === "monkeycode" ? [
+          // 「从本机客户端导入」两站都提供 —— 但**必须按域取 cookie**：桌面客户端的
+          // `mc_base_url` 是二选一的一个值，`.com` 与 `.net` 的会话装在同一个
+          // `monkeycode-cookies.json` 里。不比对域就会拿错站（上游一律 401，
+          // 界面只能猜「桌面版登录过期」，真因却是拿错了站）。
           {
             type: "oauth",
             label: `${site.displayName} 从本机客户端导入`,
@@ -422,18 +420,28 @@ export function makePlugin(site) {
              * `callback()`：铁律 2 要求 authorize 立刻返回，网络请求不能放这儿。
              */
             async authorize() {
-              const desk = readDesktopMonkeyCodeSession()
+              // 只认**本站**的域：桌面客户端的 `mc_base_url` 是二选一的一个值，
+              // `monkeycode-cookies.json` 里装的可能是另一站的会话。
+              const host = new URL(site.platformBaseUrl).hostname
+              const desk = readDesktopMonkeyCodeSession({ cookieDomains: [host] })
               if (desk === undefined) {
-                const help = "没读到本机 MonkeyCode 桌面客户端的登录态。"
-                  + "先用桌面版登录一次（登录成功后它会把会话写到本机），再回来点这个；"
-                  + "也可以改用「浏览器登录」或「API Key」。"
+                // 「没读到我这一站」有两种情况，界面必须分开说 —— 否则用户
+                // 明明登着桌面版，却被告知「没登录过」，只能反复重登。
+                const anySite = readDesktopMonkeyCodeSession()
+                const help = anySite === undefined
+                  ? "没读到本机 MonkeyCode 桌面客户端的登录态。"
+                    + "先用桌面版登录一次（登录成功后它会把会话写到本机），再回来点这个；"
+                    + "也可以改用「浏览器登录」或「API Key」。"
+                  : "本机桌面客户端登录的是**另一个站点**（国内站 / 国际站二选一），"
+                    + `不是 ${site.displayName}。请在桌面版里把服务器切到 ${site.displayName} 并登录一次，`
+                    + "或者直接用「浏览器登录」。"
                 return {
                   url: site.loginUrl ?? `${site.platformBaseUrl}/`,
                   opened: false,
                   method: "auto",
                   instructions: help,
                   async callback() {
-                    return { type: "failed", error: "本机没有 MonkeyCode 桌面客户端的登录态" }
+                    return { type: "failed", error: help }
                   },
                 }
               }
@@ -454,8 +462,7 @@ export function makePlugin(site) {
                       }
                     }
                     const profile = await fetchProfile(desk.cookie, site)
-                    return {
-                      type: "success",
+                    return signInSuccess({
                       access: JSON.stringify({
                         access_token: issued.apiKey,
                         signing_secret: issued.signingSecret,
@@ -465,7 +472,7 @@ export function makePlugin(site) {
                       expires: 0,
                       accountId: profile?.nickname ?? "",
                       uid: profile?.userId ?? "",
-                    }
+                    })
                   } catch (error) {
                     return { type: "failed", error: error instanceof Error ? error.message : String(error) }
                   }
@@ -473,7 +480,12 @@ export function makePlugin(site) {
               }
             },
           },
-          ] : []),
+          // ⚠ 这个入口**只给国内站**：国际站不认百智云 SSO（2026-11-04 实测）。
+          // 国际站的 `GET /api/v1/users/login` 302 到**它自己的** `/oauth/authorize`
+          // （`client_id=` 是空的，不经过 baizhi.cloud）；把百智云会话注入窗口再走一遍，
+          // 最终只落到国际站首页，**不会**签发 `monkeycode_ai_session`。
+          // 留在国际站上只会让用户对着一个必然超时的入口等 240 秒。
+          ...(site.id === "monkeycode" ? [
           {
             type: "oauth",
             label: `${site.displayName} 用百智云账号开通`,
@@ -560,8 +572,7 @@ export function makePlugin(site) {
                   try {
                     const signed = await signInWithBaizhiSession(baizhiCookie, site)
                     const duplicated = existingAccountWithUid(site.id, signed.userId ?? "")
-                    return {
-                      type: "success",
+                    return signInSuccess({
                       access: JSON.stringify(signed.credential),
                       expires: 0,
                       accountId: signed.nickname ?? "",
@@ -571,7 +582,7 @@ export function makePlugin(site) {
                       ...(duplicated
                         ? { message: "这个百智云账号已经开通过 MonkeyCode（同一账号，凭据已更新）。要加新号，请换一个百智云账号登录，或用「添加另一个账号」。" }
                         : {}),
-                    }
+                    })
                   } catch (error) {
                     return { type: "failed", error: error instanceof Error ? error.message : String(error) }
                   }
@@ -579,6 +590,7 @@ export function makePlugin(site) {
               }
             },
           },
+          ] : []),
           {
             type: "oauth",
             label: `${site.displayName} 浏览器登录`,
@@ -601,7 +613,6 @@ export function makePlugin(site) {
               }
             },
           },
-
         ],
 
         /**
