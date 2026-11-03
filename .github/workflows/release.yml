@@ -124,3 +124,66 @@ jobs:
               --notes-file notes.md
           fi
 
+
+  npm:
+    # 本仓库用 git 分发（`magpie plugin add github:MYCF711/magpie-monkeycode`），
+    # npm 不是必需渠道。没有配 NPM_TOKEN 时这一步**跳过**（打出 notice），
+    # 配了就照常发布 —— 不把「没配 secret」当成发布失败，也不假装发过了。
+    runs-on: ubuntu-latest
+    needs: release
+    steps:
+      - name: 是否配置了 NPM_TOKEN
+        id: guard
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::未配置 NPM_TOKEN，跳过 npm 发布（本仓库用 git 分发）"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.guard.outputs.skip != 'true'
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v4
+        if: steps.guard.outputs.skip != 'true'
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Publish
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          NPM_NAME=$(node scripts/npm-name.mjs)
+          # 本地 release.mjs --npm 可能已经发过同一版；tag 推上来后 CI 再发会 E409。
+          # 同版本已存在 = 发布已完成，跳过且不把 workflow 弄红。
+          if npm view "$NPM_NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "::warning title=npm 版本已存在::$NPM_NAME@$VERSION 已在 npm；跳过重复发布"
+            exit 0
+          fi
+          set +e
+          if [ -f scripts/publish-npm.mjs ]; then
+            node scripts/publish-npm.mjs
+          else
+            npm publish --access public
+          fi
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ]; then
+            sleep 5
+            if npm view "$NPM_NAME@$VERSION" version >/dev/null 2>&1; then
+              echo "::warning title=npm 版本已存在::$NPM_NAME@$VERSION 已发布；按成功处理"
+              exit 0
+            fi
+            exit "$code"
+          fi
