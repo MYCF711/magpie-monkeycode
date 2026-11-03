@@ -31,7 +31,12 @@ export function parseCredential(raw) {
     try {
       const parsed = JSON.parse(text)
       if (typeof parsed !== "object" || parsed === null) return undefined
-      if (typeof parsed.access_token !== "string" || parsed.access_token.length === 0) return undefined
+      // 至少要有一个可用字段。**只有 `session_cookie` 也放行**：有些厂商的
+      // 额度 / 积分只认网页登录态，用户手抄 cookie 就能用那部分能力（虽然发不了
+      // 消息）—— 判死的代价比放行大，能不能推理交给 hasToken 去管。
+      const hasKey = typeof parsed.access_token === "string" && parsed.access_token.length > 0
+      const hasCookie = typeof parsed.session_cookie === "string" && parsed.session_cookie.length > 0
+      if (!hasKey && !hasCookie) return undefined
       return parsed
     } catch {
       return undefined

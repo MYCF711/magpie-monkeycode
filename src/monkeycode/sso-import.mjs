@@ -76,8 +76,9 @@ export function readBaizhiSessions(file = authStorePath()) {
     if (value === null || typeof value !== "object") continue
     const raw = typeof value.access === "string" ? value.access : (typeof value.key === "string" ? value.key : "")
     if (raw.length === 0) continue
-    // 一条能用的百智云账号 = 解析得出凭据（有 access_token）+ 带 session_cookie。
-    // 只有 cookie 没有 key 的残缺记录不导入（它连自己的额度都查不了）。
+    // 一条能用的百智云账号 = 有 session_cookie（导入只需要它去走 SSO）。
+    // 只有 cookie、没有 sk- key 的账号正是「手抄 cookie 进来」的那种，照样能开通
+    // MonkeyCode —— 别把这类账号挡在门外。
     const credential = parseCredential(raw)
     if (credential === undefined) continue
     if (typeof credential.session_cookie !== "string" || credential.session_cookie.trim().length === 0) continue

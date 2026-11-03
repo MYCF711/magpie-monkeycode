@@ -42,8 +42,10 @@ test("坏的 JSON / 缺字段不会让整个读取失败", () => {
     "baizhi#z": { type: "api", access: JSON.stringify({ access_token: "ok", session_cookie: "s=b; baizhi_session=c" }) },
   })
   const sessions = readBaizhiSessions(file)
-  assert.equal(sessions.length, 1)
-  assert.equal(sessions[0].key, "baizhi#z")
+  // 只有 session_cookie 的账号也算（手抄 cookie 进来的就是这种），
+  // 坏 JSON / null / 空对象才被跳过。
+  assert.equal(sessions.length, 2)
+  assert.deepEqual(sessions.map((session) => session.key).sort(), ["baizhi#x", "baizhi#z"])
 })
 
 test("nextUnimported 跳过已导入的，全部导完返回 undefined", () => {
