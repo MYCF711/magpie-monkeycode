@@ -344,7 +344,85 @@ export function makeBaizhiPlugin(site = BAIZHI) {
                 url: site.loginUrl,
                 opened: true,
                 method: "auto",
-                instructions: "在打开的窗口里登录百智云控制台；登录完成后本页会自动继续（账号下需要有可用的 sk- 密钥）。",
+                instructions: "在打开的窗口里登录百智云控制台；登录完成后本页会自动继续（账号下需要有可用的 sk- 密钥）。"
+                  + "\n⚠ 百智云没有自助注册入口：没有账号的话，先去 MonkeyCode 注册（观猹账号），"
+                  + "\n   它会一并开通百智云身份，之后用同一个手机号回来登录这里。",
+                async callback() {
+                  try {
+                    const { cookie } = await flow.wait()
+                    return await finishSignIn(cookie, site)
+                  } catch (error) {
+                    return { type: "failed", error: error instanceof Error ? error.message : String(error) }
+                  }
+                },
+              }
+            },
+          },
+
+          {
+            type: "oauth",
+            label: `${site.displayName} 添加另一个账号`,
+            /**
+             * 专门给「加第二个号」用：**一次性 profile**，不复用已有登录态。
+             *
+             * 为什么必须单开一条：默认的「浏览器登录」用持久 profile —— 点「添加
+             * 另一个账号」时窗口里已经登录着旧号，用户什么都没做就"成功"了，但读到
+             * 的还是旧号的 cookie；magpie 按 uid 去重，于是提示「已添加」而列表不变
+             * （2026-11-04 真机）。
+             */
+            async authorize() {
+              const browser = process.env.MAGPIE_PLUGIN_DISABLE_BROWSER === "1" ? undefined : findBrowser()
+              if (!browser?.path) {
+                const error = manualCookieHint(site, "这台机器上没有找到 Chrome / Edge / 国产 Chromium")
+                return {
+                  url: site.loginUrl,
+                  opened: false,
+                  method: "auto",
+                  instructions: error,
+                  async callback() {
+                    return { type: "failed", error }
+                  },
+                }
+              }
+              let flow
+              let startupError = ""
+              try {
+                flow = await Promise.race([
+                  startBrowserLogin({
+                    url: site.loginUrl,
+                    browser,
+                    // 关键：**不传 profileDir** → 一次性 profile，必须真的重新登一次。
+                    cookieNames: [...CONSOLE_COOKIES],
+                    cookieDomains: [...CONSOLE_DOMAINS],
+                    timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
+                    async accept() {
+                      return true
+                    },
+                  }),
+                  new Promise((_, reject) => setTimeout(() => reject(new Error("浏览器启动超时（8 秒）")), 8_000)),
+                ])
+              } catch (error) {
+                startupError = error instanceof Error ? error.message : String(error)
+                flow = undefined
+              }
+              if (flow === undefined) {
+                const error = manualCookieHint(site, startupError || "受控浏览器没能启动")
+                return {
+                  url: site.loginUrl,
+                  opened: false,
+                  method: "auto",
+                  instructions: error,
+                  async callback() {
+                    return { type: "failed", error }
+                  },
+                }
+              }
+              return {
+                url: site.loginUrl,
+                opened: true,
+                method: "auto",
+                instructions: "这是一个全新的窗口（不会复用已有登录态）—— 请登录你要**新增**的那个百智云账号。"
+                  + "登录完成后本页会自动添加；如果登录的仍是已添加过的账号，magpie 会按账号去重、不会多出一个。",
                 async callback() {
                   try {
                     const { cookie } = await flow.wait()
