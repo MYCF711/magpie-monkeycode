@@ -3,6 +3,15 @@
 > 每个版本一节，**一条一行**，说用户能感知的变化。
 > 格式与规矩见 [UPDATING.md](./UPDATING.md)。
 
+## 0.2.39 — 2026-11-04
+
+**修「模型全都不通」：magpie 发的是它自己的模型 id，上游只认带档位前缀的原值**
+
+- 真机现象：国际站 2 条模型全部 `403 Forbidden`。直连上游实测——**同一份凭据、同一个模型**，`monkeycode-basic/deepseek-flash` 回 **200**，而 `monkeycode-basic-deepseek-flash`（slug）、UUID、裸名 `deepseek-flash` 全部 **403 Forbidden**
+- 根因在 magpie 侧：`api: { id: m.id ?? was?.api.id ?? key }` —— 它用**我们返回的 `id`**（斜杠被压成连字符）当上游 model，**无视** config 里给的 `api.id`。而模型 id 又不能带斜杠（会被 magpie 当成 provider 边界，长出 `monkeycode-basic` / `monkeycode-pro` 三个假供应商）
+- 所以只能在自己的 `loader.fetch` 里换回来：读目录缓存拿 `id → apiId` 映射，把请求体里的 `model` 从 magpie 的 id 换回平台原值，再补 system、再算签名
+- 单测锁住：`loader.fetch` 收到 `monkeycode-basic-deepseek-flash` 时，真正发出去的是 `monkeycode-basic/deepseek-flash`
+
 ## 0.2.38 — 2026-11-04
 
 **模型列表再按订阅档位收窄：basic 账号不再看到 pro / ultra 的池**
