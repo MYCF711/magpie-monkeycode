@@ -10,6 +10,9 @@ import test from "node:test"
 import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
 
+// 单测不许真的拉起浏览器：这个门闩让「浏览器登录」走降级分支。
+process.env.MAGPIE_PLUGIN_DISABLE_BROWSER = "1"
+
 import * as entry from "../index.mjs"
 import { SITES } from "../src/sites.mjs"
 import { _internal } from "../src/monkeycode/runtime.mjs"
@@ -105,7 +108,10 @@ test("三家都同时提供 API Key 与至少一种 oauth，且每个 authorize 
       const flow = await method.authorize()
       assert.ok(Date.now() - started < 1000, `${method.label}: authorize 必须立刻返回`)
       assert.equal(typeof flow.callback, "function")
-      assert.equal(flow.opened, true, "窗口由插件自己打开，别让 magpie 再开一个")
+      // 没有可用浏览器（测试门闩关掉了探测）时，插件必须让 magpie 去开系统浏览器
+      // —— 否则用户就是对着空面板干等，连个手动地址都拿不到。
+      if (flow.opened === true) assert.equal(flow.opened, true)
+      else assert.ok(String(flow.instructions).length > 0, `${method.label}: 没开窗口就必须给出手动地址`)
       assert.ok(flow.url.startsWith("https://"))
     }
   }

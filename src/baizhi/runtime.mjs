@@ -14,7 +14,8 @@ import { usage as buildUsage, usageWindow } from "../quota.mjs"
 import { createUsageCache } from "../usage-cache.mjs"
 
 import { parseCredential, hasToken } from "../credential.mjs"
-import { browserLogin, BROWSER_LOGIN_TIMEOUT_MS, profileDirFor } from "../session-login.mjs"
+import { findBrowser } from "../browser-login.mjs"
+import { BROWSER_LOGIN_TIMEOUT_MS, profileDirFor, startBrowserLogin } from "../session-login.mjs"
 import {
   exchangeSessionForKey, fetchProfile, fetchRemoteModels, fetchUsage, fetchWallet,
 } from "./credits.mjs"
@@ -114,64 +115,68 @@ async function readUsage(site, credential, fetchImpl) {
   return buildUsage({ plan: "百智云（按量计费）", windows })
 }
 
-/** 浏览器登录：开窗 → 读 cookie → 换 sk- Key（401 继续等）→ 读资料。 */
-async function signInWithBrowser(site, { fetchImpl, signal } = {}) {
-  const issued = { key: undefined }
-  let cookie = undefined
-  try {
-    await browserLogin({
-      url: site.loginUrl,
-      // 持久 profile：登录一次之后，MonkeyCode 的「用百智云账号开通」能直接复用
-      // 这份登录态（两处共用同一个 profile 目录），不用再登。
-      profileDir: profileDirFor("baizhi"),
-      // 控制台同时下发 sl-session（设备/风控）与 baizhi_session（登录），
-      // 实测**两枚都要**：只带 baizhi_session 时 /api/v1/user/profile 会 401。
-      cookieNames: [...site.sessionCookies],
-      // cookie 必须精确落在 baizhi.cloud 上：同名 sl-session 还有两枚属于
-      // ai-models / agent-toolkit 子域，用后缀匹配会随机拿到网关那枚。
-      cookieDomains: ["baizhi.cloud"],
-      timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
-      signal,
-      async accept(candidate) {
-        let exchanged
-        try {
-          exchanged = await exchangeSessionForKey(candidate, site, { fetchImpl })
-        } catch (error) {
-          // 网络层抛错（DNS / 超时 / 证书）继续等，不是「登录坏了」。
-          return false
-        }
-        if (!exchanged.ok) {
-          // 401/403 = 还没登进去（窗口一开就有匿名 cookie），继续等；
-          // 网络超时同理；「没有可用的 sk- 密钥」则是登录成功但用户还没建 Key ——
-          // 必须抛，否则会一直空转到超时，用户完全不知道要去建一把。
-          if (/HTTP 40[13]/.test(exchanged.error) || exchanged.error.includes("网页登录态未生效")) return false
-          if (exchanged.error.includes("平台接口请求失败")) return false
-          throw new Error(exchanged.error)
-        }
-        issued.key = exchanged.apiKey
-        cookie = candidate
-        return true
-      },
-    })
-  } catch (error) {
-    return { type: "failed", error: error instanceof Error ? error.message : String(error) }
-  }
+// ── 登录：百智云控制台会话 → sk- API Key ─────────────────────────────
+//
+// 控制台同时下发两枚 cookie，**两枚都要**：只带 baizhi_session 时
+// /api/v1/user/profile 会 401。且必须精确落在 baizhi.cloud 上 —— 同名
+// sl-session 还有两枚属于 ai-models / agent-toolkit 子域。
+const CONSOLE_COOKIES = Object.freeze(["sl-session", "baizhi_session"])
+const CONSOLE_DOMAINS = Object.freeze(["baizhi.cloud"])
 
-  const key = issued.key
-  if (key === undefined) return { type: "failed", error: "登录没有完成" }
-  const profile = cookie === undefined ? undefined : await fetchProfile(cookie, site, { fetchImpl })
+/** cookie 到手之后的收尾：换 sk- Key + 读资料，拼成 magpie 的登录结果。 */
+async function finishSignIn(cookie, site, { fetchImpl } = {}) {
+  const exchanged = await exchangeSessionForKey(cookie, site, { fetchImpl })
+  if (!exchanged.ok) {
+    return { type: "failed", error: `百智云：已读到网页登录态，但换取 API Key 失败（${exchanged.error}）` }
+  }
+  const profile = await fetchProfile(cookie, site, { fetchImpl })
   return {
     type: "success",
-    // 百智云的 Key 是长期静态材料，没有 refresh_token —— refresh 留空。
     access: JSON.stringify({
-      access_token: key,
-      ...(cookie === undefined ? {} : { session_cookie: cookie }),
+      access_token: exchanged.apiKey,
+      session_cookie: cookie,
       ...(profile?.userId === undefined ? {} : { user_id: profile.userId }),
     }),
     expires: 0,
     accountId: profile?.name ?? "",
     uid: profile?.userId ?? "",
   }
+}
+
+/**
+ * 在 `authorize()` 里就把窗口支起来。
+ *
+ * ⚠ 不能等到 `callback()` 才启动：magpie 的登录面板在 authorize 返回后就进入
+ * 等待态，而启动浏览器要查注册表、要等进程起来。等 callback 才启动的话，用户
+ * 会先看到一块「正在开始登录…」而屏幕上一个窗口都没有（2026-11-04 真机报障）。
+ *
+ * 启动失败时**抛错**，由调用方把 `opened` 置 false —— magpie 会替你打开系统
+ * 浏览器，用户至少能登进去。
+ */
+async function startBaizhiBrowserLogin(site, { signal, browser } = {}) {
+  return await startBrowserLogin({
+    url: site.loginUrl,
+    ...(browser === undefined ? {} : { browser }),
+    // 持久 profile：登录一次之后，MonkeyCode 的「用百智云账号开通」能直接复用
+    // 这份登录态（两处共用同一个 profile 目录），不用再登。
+    profileDir: profileDirFor("baizhi"),
+    cookieNames: [...CONSOLE_COOKIES],
+    cookieDomains: [...CONSOLE_DOMAINS],
+    timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
+    signal,
+    // 两枚到齐就算「读到登录态」；能不能换出 Key 由 finishSignIn 判。
+    async accept() {
+      return true
+    },
+  })
+}
+
+/** 手动粘贴的兜底说明：受控窗口起不来时，用户还能自己把 cookie 交进来。 */
+function manualCookieHint(site, reason) {
+  return `受控浏览器窗口没能启动（${reason}）。`
+    + `请手动打开 ${site.loginUrl} 登录，然后改用「API Key」方式粘贴一行 JSON：`
+    + '{"session_cookie":"sl-session=…; baizhi_session=…"}'
+    + "（登录后在浏览器 F12 → Application → Cookies → baizhi.cloud 里能看到这两枚）。"
 }
 
 /** 造百智云的插件实例。 */
@@ -238,13 +243,46 @@ export function makeBaizhiPlugin(site = BAIZHI) {
             type: "oauth",
             label: `${site.displayName} 浏览器登录`,
             async authorize() {
+              // ① 同步探测有没有浏览器可用（findBrowser 只查路径，不启动进程）。
+              //    测试环境用 MAGPIE_PLUGIN_DISABLE_BROWSER=1 门闩关掉真启动。
+              const browser = process.env.MAGPIE_PLUGIN_DISABLE_BROWSER === "1" ? undefined : findBrowser()
+              if (!browser?.path) {
+                const error = manualCookieHint(site, "这台机器上没有找到 Chrome / Edge / 国产 Chromium")
+                return {
+                  url: site.loginUrl,
+                  // 插件开不了，交给 magpie 开系统浏览器。
+                  opened: false,
+                  method: "auto",
+                  instructions: error,
+                  async callback() {
+                    return { type: "failed", error }
+                  },
+                }
+              }
+              // ② 后台把窗口支起来：authorize 立刻返回（面板马上有响应），
+              //    窗口在 1-2 秒内出现。等到 callback 才启动的话，用户会先对着
+              //    一块「正在开始登录…」而屏幕上一个窗口都没有（真机报障）。
+              let startupError = ""
+              const pending = startBaizhiBrowserLogin(site, { browser }).catch((error) => {
+                startupError = error instanceof Error ? error.message : String(error)
+                return undefined
+              })
               return {
                 url: site.loginUrl,
-                instructions: "在打开的窗口里登录百智云控制台；登录完成后本页会自动继续（账号下需要有可用的 sk- 密钥）。",
-                method: "auto",
                 opened: true,
+                method: "auto",
+                instructions: "在打开的窗口里登录百智云控制台；登录完成后本页会自动继续（账号下需要有可用的 sk- 密钥）。",
                 async callback() {
-                  return signInWithBrowser(site)
+                  const flow = await pending
+                  if (flow === undefined) {
+                    return { type: "failed", error: manualCookieHint(site, startupError || "窗口没能启动") }
+                  }
+                  try {
+                    const { cookie } = await flow.wait()
+                    return await finishSignIn(cookie, site)
+                  } catch (error) {
+                    return { type: "failed", error: error instanceof Error ? error.message : String(error) }
+                  }
                 },
               }
             },

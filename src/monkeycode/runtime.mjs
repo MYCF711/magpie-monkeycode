@@ -17,7 +17,8 @@ import { createUsageCache } from "../usage-cache.mjs"
 
 import { SITES } from "../sites.mjs"
 import { browserLogin, BROWSER_LOGIN_TIMEOUT_MS } from "./browser-login.mjs"
-import { profileDirFor, readCookiesSilently } from "../session-login.mjs"
+import { profileDirFor, readCookiesSilently, startBrowserLogin } from "../session-login.mjs"
+import { findBrowser } from "../browser-login.mjs"
 import { importOneBaizhiAccount, signInWithBaizhiSession } from "./sso-import.mjs"
 import {
   claimCheckin, cookieOf, exchangeSessionForKey, fetchPlan, fetchProfile, fetchWallet, PLAN_LABELS,
@@ -119,6 +120,9 @@ async function readUsage(site, credential, fetchImpl) {
 async function signInWithBrowser(site, { fetchImpl, signal } = {}) {
   const issued = { credential: undefined }
   try {
+    if (process.env.MAGPIE_PLUGIN_DISABLE_BROWSER === "1") {
+      return { type: "failed", error: "受控浏览器未启动（测试环境）" }
+    }
     const { cookie } = await browserLogin({
       url: site.loginUrl ?? `${site.platformBaseUrl}/`,
       cookieName: site.sessionCookie,
@@ -238,40 +242,55 @@ export function makePlugin(site) {
              * 一个账号点一次；想再开一个号，在窗口里换号再点。
              */
             async authorize() {
+              // 百智云的 cookie 名与域：控制台同时下发 sl-session（设备/风控）
+              // 与 baizhi_session（登录），两枚都要；且必须精确落在 baizhi.cloud 上
+              // （同名 sl-session 还有两枚属于 ai-models / agent-toolkit 子域）。
+              const names = ["sl-session", "baizhi_session"]
+              const domains = ["baizhi.cloud"]
+              const profileDir = profileDirFor("baizhi")
+              // 立刻返回、后台起飞：等到 callback 才启动的话，用户会先对着
+              // 一块「正在开始登录…」而屏幕上一个窗口都没有。
+              // ⚠ 这个后台 Promise 必须**永不 reject**：magpie 不一定会调 callback
+              //（用户可能直接取消），悬空的 rejection 会变成未捕获异常 —— 真机上
+              // 这类异常足以把插件宿主带崩。错误先收进 flowError，由 callback 取。
+              let flowError = ""
+              const startFlow = (async () => {
+                // 单测门闩：不许真的拉起浏览器。
+                if (process.env.MAGPIE_PLUGIN_DISABLE_BROWSER === "1") {
+                  throw new Error("受控浏览器未启动（测试环境）")
+                }
+                // ① 先静默：profile 里已有登录态就直接用（不弹窗、不等用户）。
+                //    这就是「一个百智云账号，两站都能进」的那一步。
+                const silent = await readCookiesSilently({ cookieNames: names, cookieDomains: domains, profileDir })
+                if (silent !== undefined) return silent
+                // ② 没有才让人登一次（持久 profile：这次登完，下次静默命中）。
+                const flow = await startBrowserLogin({
+                  url: "https://baizhi.cloud/console/",
+                  cookieNames: names,
+                  cookieDomains: domains,
+                  profileDir,
+                  timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
+                  async accept() {
+                    return true
+                  },
+                })
+                const { cookie } = await flow.wait()
+                return cookie
+              })().catch((error) => {
+                flowError = error instanceof Error ? error.message : String(error)
+                return undefined
+              })
               return {
                 url: "https://baizhi.cloud/console/",
+                // 窗口在 authorize 里就支起来（见下面 startFlow），这里说明只讲怎么用。
                 instructions: "在打开的窗口里登录你的百智云账号；登录完成后本页会自动开通 MonkeyCode。"
                   + "登录过一次之后，另一站会直接复用这个登录态（同一 profile），不用再登。",
                 method: "auto",
                 opened: true,
                 async callback() {
-                  // 百智云的 cookie 名与域：控制台同时下发 sl-session（设备/风控）
-                  // 与 baizhi_session（登录），两枚都要；且必须精确落在 baizhi.cloud 上
-                  // （同名 sl-session 还有两枚属于 ai-models / agent-toolkit 子域）。
-                  const names = ["sl-session", "baizhi_session"]
-                  const domains = ["baizhi.cloud"]
-                  const profileDir = profileDirFor("baizhi")
-                  let baizhiCookie
-                  try {
-                    // ① 先静默：profile 里已有登录态就直接用（不弹窗、不等用户）。
-                    //    这就是「一个百智云账号，两站都能进」的那一步。
-                    baizhiCookie = await readCookiesSilently({ cookieNames: names, cookieDomains: domains, profileDir })
-                    // ② 没有才让人登一次（持久 profile：这次登完，下次静默命中）。
-                    if (baizhiCookie === undefined) {
-                      const result = await browserLogin({
-                        url: "https://baizhi.cloud/console/",
-                        cookieNames: names,
-                        cookieDomains: domains,
-                        profileDir,
-                        timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
-                        async accept() {
-                          return true
-                        },
-                      })
-                      baizhiCookie = result.cookie
-                    }
-                  } catch (error) {
-                    return { type: "failed", error: error instanceof Error ? error.message : String(error) }
+                  const baizhiCookie = await startFlow
+                  if (baizhiCookie === undefined) {
+                    return { type: "failed", error: `用百智云账号开通失败：${flowError || "受控浏览器没有启动"}` }
                   }
                   try {
                     const signed = await signInWithBaizhiSession(baizhiCookie, site)

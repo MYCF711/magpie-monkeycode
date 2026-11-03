@@ -259,4 +259,55 @@ export async function browserLogin({
   }
 }
 
+/**
+ * 「先启动、后等待」形态的浏览器登录。
+ *
+ * 为什么要拆开：magpie 的登录面板在 `authorize()` 返回后才进入等待态。如果窗口
+ * 等到 `callback()` 里才开始启动（要查注册表、要等浏览器起来），面板会先显示
+ * 「正在开始登录…」而屏幕上一个窗口都没有 —— 用户不知道要等多久，也拿不到
+ * 可手动打开的地址。所以这里在 authorize() 里就把窗口支起来：
+ *
+ * - 启动失败 → 抛错，调用方把 `opened` 置 false，让 magpie 自己开系统浏览器
+ *   （用户至少能登进去、拿到 cookie），并把地址写进说明；
+ * - 启动成功 → 返回 `wait()`，callback() 里只等结果。
+ *
+ * @returns {Promise<{ wait: () => Promise<{cookie: string, browser: string}> , close: () => void }>}
+ */
+export async function startBrowserLogin({
+  url,
+  cookieName,
+  cookieNames,
+  cookieDomains,
+  timeoutMs = BROWSER_LOGIN_TIMEOUT_MS,
+  accept,
+  signal,
+  profileDir,
+  browser = findBrowser(),
+}) {
+  const names = Array.isArray(cookieNames) && cookieNames.length > 0 ? cookieNames : [cookieName]
+  const handle = await openControlledBrowser({ url, profileDir, browser })
+  // 存活检查：浏览器可能因为 profile 被占用 / 被策略拦掉而**立刻退出**，
+  // 这时 CDP 端口谁也连不上，早点报错比让用户对着空面板等 4 分钟强。
+  const closed = () => handle.ws.readyState !== 1
+  return {
+    close: handle.close,
+    async wait() {
+      const deadline = Date.now() + timeoutMs
+      try {
+        while (Date.now() < deadline) {
+          if (signal?.aborted) throw new Error("登录已取消")
+          if (closed()) throw new Error("受控浏览器窗口被关掉了（或被系统拦下没能启动）")
+          const cookies = await cookiesOn(handle.ws).catch(() => [])
+          const cookie = sessionCookieOf(cookies, names, cookieDomains)
+          if (cookie !== undefined && await accept(cookie)) return { cookie, browser: browser.name }
+          await new Promise((resolve) => setTimeout(resolve, BROWSER_LOGIN_POLL_MS))
+        }
+        throw new Error("登录超时：浏览器窗口里还没有完成登录")
+      } finally {
+        handle.close()
+      }
+    },
+  }
+}
+
 export const _internal = { cdpCookies, freePort, sessionCookieOf, cookiesOn }
