@@ -19,7 +19,9 @@ test("entryOf：UUID 进 apiId，model 名压成 slug；隐藏与 OpenAI 协议�
     is_hidden: false,
   })
   assert.equal(entry.id, "monkeycode-pro-hy3", "斜杠必须压平，否则 magpie 拆出幽灵供应商")
-  assert.equal(entry.apiId, "8ca0c30e-08ac-42d5-a4db-584d52fabe98", "请求体里的 model 是 UUID")
+  // 实测：同一个模型传 UUID 回 403、传 model 名回 200 —— 请求体里的 model 是后者。
+  assert.equal(entry.apiId, "monkeycode-pro/hy3", "请求体里的 model 是平台 model 名（带档位前缀）")
+  assert.equal(entry.uuid, "8ca0c30e-08ac-42d5-a4db-584d52fabe98", "UUID 留着做区分，但不用于请求")
   assert.equal(entry.context, 200000)
   assert.equal(entry.image, true)
   assert.equal(entryOf({ id: "x", model: "y", interface_type: "openai_responses" }), undefined)
@@ -43,7 +45,8 @@ test("fetchCatalog 用 cookie 认证，过滤隐藏模型并去重", async () =>
     },
   })
   assert.match(seenCookie, /baizhi_session=b/)
-  assert.deepEqual(result.models.map((m) => m.apiId), ["u1"], "隐藏的去重后只剩一条")
+  assert.equal(result.models.length, 1, "隐藏的、重复的都只剩一条")
+  assert.equal(result.models[0].apiId, "a/b", "apiId 是 model 名")
 })
 
 test("fetchCatalog：平台没有可用模型时报失败，不返回空表", async () => {
