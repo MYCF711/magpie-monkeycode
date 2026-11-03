@@ -26,7 +26,7 @@ import { profileDirFor, readCookiesSilently, startBrowserLogin } from "../sessio
 import { signInWithBaizhiSession } from "./sso-import.mjs"
 import { readDesktopMonkeyCodeSession } from "./desktop-session.mjs"
 import { loginWithPassword } from "./password-login.mjs"
-import { KNOWN_CONTEXT, isStale, prettyModelName, readCatalog, refreshCatalog, warmCatalog } from "./catalog.mjs"
+import { filterByTier, KNOWN_CONTEXT, isStale, prettyModelName, readCatalog, refreshCatalog, warmCatalog } from "./catalog.mjs"
 import { AGREE_PROTOCOL_JS } from "../baizhi/runtime.mjs"
 
 /**
@@ -90,10 +90,11 @@ function configModels(site) {
   const cached = readCatalog(site.id)
   if (cached !== undefined && cached.models.length > 0) {
     const out = {}
-    // 平台目录给的就是「这个账号能调什么」（按权限 / 订阅过滤过的），原样列出。
-    // 不再拿 `usable` 二次筛选：那是 `max_tokens: 1` 的探测结论，会误杀慢的 /
-    // 被限流的模型，也会让账号看起来「模型怎么这么少」。
-    for (const model of cached.models) {
+    // 平台目录给的就是「这个账号能调什么」（按权限 / 订阅过滤过的）。
+    // 落盘时按订阅档位收窄过，这里再按同一条规则筛一遍（幂等）：老缓存没存 tier
+    // 就原样列出，不会因为某次刷新没带档位而把 pro / ultra 放回来。
+    const visible = cached.tier === undefined ? cached.models : filterByTier(cached.models, cached.tier)
+    for (const model of visible) {
       out[model.id] = {
         id: model.id,
         // 显示名在读取时算：老缓存里没有 displayName 也能立刻变好看，不用重拉目录。

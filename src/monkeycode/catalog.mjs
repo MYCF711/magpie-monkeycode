@@ -193,12 +193,13 @@ export async function fetchCatalog(cookie, site, { fetchImpl = fetch, timeoutMs 
   return { ok: true, models }
 }
 
-/** 写缓存。 */
-export function writeCatalog(providerId, models) {
+/** 写缓存。`tier` 一并落盘：读的时候按它再筛一遍，刷新时也沿用它。 */
+export function writeCatalog(providerId, models, { tier } = {}) {
   const file = catalogPath(providerId)
   try {
     mkdirSync(join(file, ".."), { recursive: true })
-    writeFileSync(file, `${JSON.stringify({ fetchedAt: Date.now(), models }, null, 2)}\n`)
+    const payload = { fetchedAt: Date.now(), models, ...(tier === undefined ? {} : { tier }) }
+    writeFileSync(file, `${JSON.stringify(payload, null, 2)}\n`)
     return true
   } catch {
     return false
@@ -210,21 +211,28 @@ export function readCatalog(providerId) {
   try {
     const parsed = JSON.parse(readFileSync(catalogPath(providerId), "utf8"))
     if (!Array.isArray(parsed?.models) || parsed.models.length === 0) return undefined
-    return { fetchedAt: Number(parsed.fetchedAt) || 0, models: parsed.models }
+    return {
+      fetchedAt: Number(parsed.fetchedAt) || 0,
+      models: parsed.models,
+      // 落盘时用的档位。读的时候再按它筛一遍（幂等），这样即使某次刷新没传
+      // tier，也不会把 pro / ultra 又放回来。
+      ...(typeof parsed.tier === "string" ? { tier: parsed.tier } : {}),
+    }
   } catch {
     return undefined
   }
 }
 
 /**
- * 缓存是否过期。
+ * 缓存是否过期：只看时间。
  *
- * 除了时间，还看**探测过没有**：老缓存（0.2.13 之前写的）没有 `usable` 字段，
- * 直接拿来用会把「点哪个都 403」的模型全列出来 —— 那种缓存视为过期，重探一次。
+ * ⚠ 别再拿「有没有 `usable` 字段」当判据（0.2.39 之前是）。探测已经默认关闭，
+ * 新缓存根本不写 `usable` —— 那个条件会让**每一次** usage 都判定过期、每次都在
+ * 后台重拉一遍，刚写好的收窄结果转眼被覆盖回「四类混列」（2026-11-04 真机：
+ * 手工收窄到 2 条，两分钟后缓存又变回 4 条）。
  */
 export function isStale(catalog, now = Date.now()) {
   if (catalog === undefined) return true
-  if (!catalog.models.every((model) => typeof model.usable === "boolean")) return true
   return now - catalog.fetchedAt > CATALOG_TTL_MS
 }
 
@@ -342,11 +350,12 @@ export function filterByTier(models, tier) {
 export async function refreshCatalog(cookie, site, options = {}) {
   const result = await fetchCatalog(cookie, site, options)
   if (!result.ok) return false
-  const narrowed = filterByTier(result.models, options.tier)
+  const tier = options.tier ?? readCatalog(site.id)?.tier
+  const narrowed = filterByTier(result.models, tier)
   const models = options.probe === true && options.credential !== undefined
     ? await probeCatalog(options.credential, site, narrowed, options)
     : narrowed
-  return writeCatalog(site.id, models)
+  return writeCatalog(site.id, models, { tier })
 }
 
 /**
@@ -368,6 +377,6 @@ export async function warmCatalog(cookie, site, { fetchImpl = fetch, timeoutMs =
   const result = await fetchCatalog(cookie, site, { fetchImpl, timeoutMs })
   if (!result.ok) return { ok: false, error: result.error }
   const models = filterByTier(result.models, tier)
-  const written = writeCatalog(site.id, models)
+  const written = writeCatalog(site.id, models, { tier })
   return written ? { ok: true, count: models.length } : { ok: false, error: "目录缓存写不进去" }
 }
