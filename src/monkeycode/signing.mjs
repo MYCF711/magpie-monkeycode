@@ -93,13 +93,20 @@ export function signingPrompt(payload) {
 }
 
 /** 网关签名：`v1=<hex HMAC-SHA256(signing_secret, prompt)>`。 */
+/**
+ * 网关要求被签名的 prompt **非空**（实测：没有 system 的请求一律 403
+ * `invalid ohmyagent request`）。用户直接对话时 magpie 常常不发 system，
+ * 所以 loader 会在缺 system 时补这一句，并按它签名 —— 否则整个请求走不通。
+ */
+export const FALLBACK_SYSTEM = "You are a helpful assistant."
+
 export function gatewaySignature(signingSecret, prompt) {
   const digest = createHmac("sha256", signingSecret).update(prompt, "utf8").digest("hex")
   return `v1=${digest}`
 }
 
 /** 安静地解析已序列化的 body；失败返回 undefined（调用方退化成空 prompt 签名）。 */
-function parseBodyQuietly(body) {
+export function parseBodyQuietly(body) {
   try {
     return JSON.parse(body)
   } catch {

@@ -24,7 +24,7 @@ import { isStale, prettyModelName, readCatalog, refreshCatalog } from "./catalog
 import {
   claimCheckin, cookieOf, exchangeSessionForKey, fetchPlan, fetchProfile, fetchWallet, PLAN_LABELS,
 } from "./credits.mjs"
-import { gatewayHeaders, isUsableCredential, parseCredential } from "./signing.mjs"
+import { FALLBACK_SYSTEM, gatewayHeaders, isUsableCredential, parseBodyQuietly, parseCredential, signingPrompt } from "./signing.mjs"
 
 const SDK = "@ai-sdk/anthropic"
 const MAX_OUTPUT = 64_000
@@ -474,7 +474,20 @@ export function makePlugin(site) {
               let body = init?.body
               // ⚠ 用 clone() 读文本，绝不能直接消费原 body 流。
               if (body === undefined && request) body = await request.clone().text()
-              const text = typeof body === "string" ? body : undefined
+              let text = typeof body === "string" ? body : undefined
+
+              // 网关要求被签名的 prompt 非空：没有 system 的请求它会一律回
+              // `403 invalid ohmyagent request`（2026-11-04 实测：不带 system 的
+              // 探测 403、带 system 的同样请求 200）。用户直接对话时 magpie 经常
+              // 不发 system —— 这里补一句最小的并据它签名，否则整条链路走不通。
+              if (text !== undefined && signingPrompt(parseBodyQuietly(text)).length === 0) {
+                try {
+                  const parsed = JSON.parse(text)
+                  parsed.system = FALLBACK_SYSTEM
+                  text = JSON.stringify(parsed)
+                  body = text
+                } catch {}
+              }
 
               const extra = gatewayHeaders(credential, { body: text })
               for (const [name, value] of Object.entries(extra)) headers.set(name, value)

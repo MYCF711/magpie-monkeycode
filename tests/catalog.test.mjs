@@ -80,3 +80,14 @@ test("refreshCatalog 带 credential 时会把可用性探进去", async () => {
   const { probeCatalog } = await import("../src/monkeycode/catalog.mjs")
   assert.equal(typeof probeCatalog, "function")
 })
+
+test("签名 prompt：没有 system 的请求必须补 FALLBACK_SYSTEM（否则网关一律 403）", async () => {
+  const { FALLBACK_SYSTEM, parseBodyQuietly, signingPrompt } = await import("../src/monkeycode/signing.mjs")
+  assert.ok(FALLBACK_SYSTEM.length > 0)
+  // 无 system 的请求：prompt 为空 —— 这就是网关回 invalid ohmyagent request 的原因。
+  const bare = JSON.stringify({ model: "m", messages: [{ role: "user", content: "hi" }] })
+  assert.equal(signingPrompt(parseBodyQuietly(bare)), "")
+  // 补上 system 之后就有东西可签了。
+  const patched = JSON.stringify({ ...JSON.parse(bare), system: FALLBACK_SYSTEM })
+  assert.equal(signingPrompt(parseBodyQuietly(patched)), FALLBACK_SYSTEM)
+})
