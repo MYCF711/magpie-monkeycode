@@ -130,16 +130,32 @@ SSO 路径（`signInWithBaizhiSession`）保持可用。
 
 ### 0.7 国际版网页登录必须能成功，且列出模型
 
-**现状（2026-11-04，未修复）**：用户在国际版点网页登录，界面报
+**现状（2026-11-04，已定位并修复，待真机二次确认）**：用户在国际版点网页登录，界面报
 **「MonkeyCode 国际版 已登录，但 magpie 无法列出它，请反馈此问题」**。
+
+**根因（已确认，是宿主契约不是本插件猜测）**：magpie 插件宿主的 `save()` 只有两条出口 ——
+`if ("refresh" in result) setAuth(oauth)` / `else if ("key" in result) setAuth(api)`。
+本插件所有网页登录都返回 `{type:"success", access, expires, accountId, uid}`：没有 `refresh`
+也没有 `key`，**两条都不命中 ⇒ 不保存、也不报错**。magpie 于是显示「已登录」，而
+`plugin-auth.json` 里没有记录，`providers?wait=1` 里就没有这个 account，界面打这句提示。
+为什么国内站没暴露：它一直是 **API Key** 方式登录（`type: "api"`，走 api 分支），
+一次网页登录都没真正落过盘。修法见 `src/credential.mjs` 的 `signInSuccess()` 与
+`tests/signin-contract.test.mjs`（裸 `type: "success"` 已被单测禁止）。
 
 **已知事实**：
 
+- 国际站登录页只有三种方式：**GitHub / Google / 账号密码**（2026-11-04 无头读 DOM：
+  文案 `GitHub 登录` / `Google 登录` / `账号密码登录`，另有「当前访问的是国际版」提示）
 - `https://monkeycode-ai.net/` → 200；`/login` → 200 但**不返 Set-Cookie**（SPA，cookie 由 JS 下发）
+- **国际站不认百智云 SSO**：`GET /api/v1/users/login` 302 到它**自己的** `/oauth/authorize`
+  （`client_id=` 为空，不经过 `baizhi.cloud`）；把百智云会话注入窗口走一遍只落到国际站首页，
+  不会签发 session ⇒ 国际站**不提供**「用百智云账号开通」入口
+- 纯 API 的两条：`POST /api/v1/users/password-login`（`{email,password,captcha_token}`，
+  缺 token 回 **403**；`POST /api/v1/public/captcha/challenge` 回 201，形状与国内站一致）
 - `https://monkeycode-ai.net/api/v1/users/models` 无 cookie / 国内 cookie → **401**
 - 国内站同一路径 → 200
 
-**因此根因只可能是这两类之一**，改之前先分清：
+**当初的排查框架（保留，别拿它当结论）**：根因不是下面这两类，是宿主「两条出口都不命中」的保存契约。
 
 1. **会话没拿到**：窗口里的登录没真正完成（cookie 名不同，或 `accept()` 太早返回）
 2. **会话拿到了但目录拉不到**：`catalog` 打错了 baseUrl / 路径，或 `.net` 的模型接口不是

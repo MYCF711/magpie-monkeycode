@@ -3,6 +3,18 @@
 > 每个版本一节，**一条一行**，说用户能感知的变化。
 > 格式与规矩见 [UPDATING.md](./UPDATING.md)。
 
+## 0.2.36 — 2026-11-04
+
+**「已登录，但 magpie 无法列出它」的真因找到了：登录结果少了 `refresh`，magpie 一格都没存**
+
+- 根因（不是猜测，是宿主契约）：magpie 的插件宿主 `save()` 只有两条出口 —— `if ("refresh" in result) setAuth(oauth)` 或 `else if ("key" in result) setAuth(api)`。本插件所有网页登录返回的都是 `{type:"success", access, expires, accountId, uid}`：**没有 `refresh`，也没有 `key`**，两条都不命中 ⇒ 宿主既不保存也不报错，magpie 照样显示「已登录」，账号却没落盘。紧接着的 `providers?wait=1` 里找不到这个 account，界面就打「{user} 已登录，但 magpie 无法列出它，请反馈此问题」
+- 为什么以前没暴露：国内站与百智云一直是用 **API Key** 方式登录的（`plugin-auth.json` 里 `type: "api"`），走的是 api 分支；**一次网页登录都没真正存下来过**。国际站只能用网页 / GitHub / Google / 密码登录，于是第一个撞上
+- 修法：新增 `signInSuccess()` 统一拼 oauth 登录结果（`refresh` 与 `access` 同值、`expires: 0`），五处 success 全部改走它；**单测锁住「生产代码里不许再出现裸的 `type: "success"`」**，下一个登录方式不会原样复制这个静默失败
+- 国际站的登录方式实测（无头浏览器读 DOM）：**GitHub / Google / 账号密码**三种，页面明确写「当前访问的是国际版」。两条纯 API 的路仍在：账号密码登录（captcha 形状与国内站一致，`{email,password}` 不带 token 回 403 而不是 400）+ 桌面客户端导入
+- **国际站删掉「用百智云账号开通」**：实测 `GET https://monkeycode-ai.net/api/v1/users/login` 302 到它**自己的** `/oauth/authorize`（`client_id=` 是空的，不经过 `baizhi.cloud`）；把百智云会话注入那个窗口再走一遍，最终只落到国际站首页，**不会**签发 `monkeycode_ai_session`。留着只会让人对着一个必然超时的入口等 240 秒
+- 「从本机客户端导入」**改按域读 cookie，并恢复给国际站**（0.2.33 删它是因为当时桌面端指向国内站）：桌面客户端的 `mc_base_url` 是国内站 / 国际站二选一的一个值，`monkeycode-cookies.json` 里装的是**当前那一站**的会话。现在按本站 host 过滤，读到另一站的登录态时会明确说「桌面客户端登录的是另一个站点」，而不是让上游 401 把人引去怀疑「登录过期」
+- `AGENTS.md` 0.7 从「未修复」改为修复记录（保留原判据）；0.6 补上国际站登录方式与「不认百智云 SSO」的实测结论
+
 ## 0.2.35 — 2026-11-04
 
 **百智云也能用手机号 + 验证码登录了：两个请求，不开窗口**

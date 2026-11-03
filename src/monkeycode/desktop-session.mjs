@@ -73,12 +73,31 @@ function expiredAt(entry, now = Date.now()) {
 }
 
 /**
+ * 一条 cookie 的域是否属于本站。
+ *
+ * 桌面客户端的 cookie 文件是**按当前 `mc_base_url` 写的一份**（客户端设置里
+ * 国内站 / 国际站二选一），所以同一个 `monkeycode-cookies.json` 里装的可能是
+ * `.com` 也可能是 `.net` 的会话。不比对域就会把一站的会话拿去打另一站 ——
+ * 上游一律回 401，界面只能猜「桌面版登录过期了」，而真因是**拿错了站**。
+ *
+ * 规则：去前导点后完全相同，或是它的子域（`www.monkeycode-ai.net`）。
+ * 没写 `domain` 的老格式放行（不做无根据的排除）。
+ */
+export function domainMatches(domain, host) {
+  if (typeof domain !== "string" || domain.trim().length === 0) return true
+  if (typeof host !== "string" || host.trim().length === 0) return true
+  const d = domain.trim().replace(/^\./, "").toLowerCase()
+  const h = host.trim().toLowerCase()
+  return d === h || d.endsWith(`.${h}`)
+}
+
+/**
  * 解析客户端 cookie 文件，返回 `name=value; name2=value2`。
  *
- * 只保留调用方点名的 cookie 名；同名的取**最后一条未过期**的
+ * 只保留调用方点名的 cookie 名与站点；同名的取**最后一条未过期**的
  * （客户端会同时存多个域的 `sl-session`，前面的可能是别的子域）。
  */
-export function cookiesFromJar(text, { names, now = Date.now() } = {}) {
+export function cookiesFromJar(text, { names, domains, now = Date.now() } = {}) {
   let parsed
   try {
     parsed = JSON.parse(text)
@@ -87,12 +106,14 @@ export function cookiesFromJar(text, { names, now = Date.now() } = {}) {
   }
   const list = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.cookies) ? parsed.cookies : []
   const wanted = Array.isArray(names) && names.length > 0 ? names : []
+  const hosts = Array.isArray(domains) && domains.length > 0 ? domains : []
   const picked = new Map()
   for (const entry of list) {
     const name = typeof entry?.name === "string" ? entry.name.trim() : ""
     const value = typeof entry?.value === "string" ? entry.value : ""
     if (name.length === 0 || value.length === 0) continue
     if (wanted.length > 0 && !wanted.includes(name)) continue
+    if (hosts.length > 0 && !hosts.some((host) => domainMatches(entry?.domain, host))) continue
     if (expiredAt(entry, now)) continue
     picked.set(name, value)
   }
@@ -110,11 +131,12 @@ export function cookiesFromJar(text, { names, now = Date.now() } = {}) {
  * @param {object} options
  * @param {string} options.cookieFile 文件名，见 `DESKTOP_COOKIE_FILES`
  * @param {string[]} options.cookieNames 需要的 cookie 名（全部到齐才算命中）
+ * @param {string[]} [options.cookieDomains] 只认这些域（本站 host）；不传则不限
  * @param {string} [options.appDir] 覆盖目录名
  * @param {NodeJS.ProcessEnv} [options.env]
  * @returns {{ cookie: string, file: string } | undefined}
  */
-export function readDesktopCookie({ cookieFile, cookieNames, appDir = DESKTOP_APP_DIR, env = process.env, home, now = Date.now() } = {}) {
+export function readDesktopCookie({ cookieFile, cookieNames, cookieDomains, appDir = DESKTOP_APP_DIR, env = process.env, home, now = Date.now() } = {}) {
   if (typeof cookieFile !== "string" || cookieFile.length === 0) return undefined
   const names = Array.isArray(cookieNames) ? cookieNames : []
   // `home` 必须能一路传到底：单测要用它把「按 homedir 兜底」关掉（否则测试会读到
@@ -129,7 +151,7 @@ export function readDesktopCookie({ cookieFile, cookieNames, appDir = DESKTOP_AP
     } catch {
       continue
     }
-    const cookie = cookiesFromJar(text, { names, now })
+    const cookie = cookiesFromJar(text, { names, domains: cookieDomains, now })
     if (cookie === undefined) continue
     return { cookie, file }
   }
@@ -140,6 +162,10 @@ export function readDesktopCookie({ cookieFile, cookieNames, appDir = DESKTOP_AP
  * 读 MonkeyCode 平台会话（`monkeycode_ai_session`）。
  *
  * 这是「用户装过桌面版并登录过」的唯一判据 —— 后续用它换网关凭据。
+ *
+ * `cookieDomains` 传本站 host（调用方从 `site.platformBaseUrl` 取）：桌面客户端
+ * 的 `mc_base_url` 是**一个**值，`.com` 与 `.net` 的会话装在同一个文件里，
+ * 不比对域就会拿错站的 cookie。
  */
 export function readDesktopMonkeyCodeSession(options = {}) {
   return readDesktopCookie({ cookieFile: DESKTOP_COOKIE_FILES.monkeycode, cookieNames: ["monkeycode_ai_session"], ...options })

@@ -51,6 +51,46 @@ export function parseCredential(raw) {
   return TOKEN.test(text) ? { access_token: text } : undefined
 }
 
+/**
+ * 拼一个 oauth 登录的 `success` 结果。
+ *
+ * ⚠ **`refresh` 不是可选项，是「存不存得下」的开关。**
+ * magpie 的插件宿主（`host.js` 的 `save()`）只认这个形状：
+ *
+ * ```js
+ * if ("refresh" in result) setAuth(key, { type: "oauth", refresh, access, expires, ...extra })
+ * else if ("key" in result || apiKey) setAuth(key, { type: "api", key, metadata })
+ * ```
+ *
+ * 两条都不命中时它**既不保存也不报错**：`saved` 照常回 `{ok:true}`，magpie 于是
+ * 显示「已登录」，而账号根本没落盘 —— 紧接着的 `providers?wait=1` 里自然找不到这个
+ * account，卡片打出一句「{user} 已登录，但 magpie 无法列出它，请反馈此问题」。
+ *
+ * 这个包没有 refresh 端点（凭据是长期静态材料），但 `refresh` 位必须占上：
+ * 放同一串 JSON，`secretOf()` 才有值、同账号判重才按秘密比对。`expires: 0`
+ * 表示永不到期，`auth.refresh` 恒返回 undefined，不会有人拿它去续期。
+ *
+ * @param {object} fields
+ * @param {string} fields.access 存进 `auth.access` 的凭据字符串
+ * @param {string} [fields.accountId] 卡片上的**名字**（不是身份）
+ * @param {string} [fields.uid] 平台账号 id（身份，magpie 按它判重）
+ * @param {string} [fields.message] 给用户看的补充说明
+ */
+export function signInSuccess({ access, accountId, uid, message, ...rest }) {
+  return {
+    type: "success",
+    access,
+    // 与 access 同值：没有 refresh_token 的厂商，两格装的是同一份静态凭据。
+    refresh: access,
+    // 0 = 永不到期（长期静态材料）；调用方给 expires 就以它为准。
+    expires: 0,
+    ...rest,
+    ...(typeof accountId === "string" && accountId.length > 0 ? { accountId } : {}),
+    ...(typeof uid === "string" && uid.length > 0 ? { uid } : {}),
+    ...(typeof message === "string" && message.length > 0 ? { message } : {}),
+  }
+}
+
 /** 凭据是否有可用的推理 Key。 */
 export function hasToken(credential) {
   return Boolean(credential && typeof credential.access_token === "string" && credential.access_token.length > 0)

@@ -122,14 +122,27 @@ test("三家都同时提供 API Key 与至少一种 oauth，且每个 authorize 
   }
 })
 
-test("MonkeyCode 提供「用百智云账号开通」入口（SSO，不是另存一个百智云账号）", async () => {
-  for (const factory of [entry.MonkeyCodeAuthPlugin, entry.MonkeyCodeIntlAuthPlugin]) {
-    const plugin = await factory({ client: {} })
-    const labels = plugin.auth.methods.map((method) => method.label)
-    assert.ok(labels.some((label) => label.includes("百智云账号开通")), "缺 SSO 入口")
-    const sso = plugin.auth.methods.find((method) => method.label.includes("用百智云账号开通"))
-    const flow = await sso.authorize()
-    // 窗口开在百智云控制台：用户在里面登录/换号。
-    assert.equal(flow.url, "https://baizhi.cloud/console/")
+test("「用百智云账号开通」只给国内站 —— 国际站不认百智云 SSO（2026-11-04 实测）", async () => {
+  const cn = await entry.MonkeyCodeAuthPlugin({ client: {} })
+  const sso = cn.auth.methods.find((method) => method.label.includes("用百智云账号开通"))
+  assert.ok(sso, "国内站缺 SSO 入口")
+  const flow = await sso.authorize()
+  // 窗口开在百智云控制台：用户在里面登录/换号。
+  assert.equal(flow.url, "https://baizhi.cloud/console/")
+
+  // 国际站的 `GET /api/v1/users/login` 302 到**它自己的** `/oauth/authorize`
+  // （`client_id=` 为空，不经过 baizhi.cloud）：注入百智云会话走一遍，只落到
+  // 国际站首页，不会签发 monkeycode_ai_session。留着这个入口 = 让用户对着一个
+  // 必然超时的流程等 240 秒。
+  const intl = await entry.MonkeyCodeIntlAuthPlugin({ client: {} })
+  assert.equal(
+    intl.auth.methods.some((method) => method.label.includes("百智云账号开通")),
+    false,
+    "国际站不该有百智云 SSO 入口",
+  )
+  // 它自己的登录方式仍在：浏览器登录覆盖 GitHub / Google / 账号密码；另有纯 API 的账号密码与桌面导入。
+  const intlLabels = intl.auth.methods.map((method) => method.label).join(" ")
+  for (const kept of ["API Key", "账号密码登录", "从本机客户端导入", "浏览器登录"]) {
+    assert.ok(intlLabels.includes(kept), `国际站缺 ${kept} 入口`)
   }
 })

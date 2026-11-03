@@ -161,7 +161,7 @@ export function shouldRotate(failureClass) {
 }
 
 // 凭据解析已抽到 src/credential.mjs（百智云也用它）；这里原样透出，调用方不必改 import。
-export { maskKey, parseCredential } from "../credential.mjs"
+export { maskKey, parseCredential, signInSuccess } from "../credential.mjs"
 
 /** 凭据是否可用（两个字段都要有）。 */
 export function isUsableCredential(credential) {

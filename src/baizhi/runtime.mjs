@@ -13,7 +13,7 @@
 import { usage as buildUsage, usageWindow } from "../quota.mjs"
 import { createUsageCache } from "../usage-cache.mjs"
 
-import { parseCredential, hasToken } from "../credential.mjs"
+import { parseCredential, hasToken, signInSuccess } from "../credential.mjs"
 import { findBrowser } from "../browser-login.mjs"
 import { openInSystemBrowser } from "../system-open.mjs"
 import { BROWSER_LOGIN_TIMEOUT_MS, openControlledBrowser, profileDirFor, startBrowserLogin } from "../session-login.mjs"
@@ -158,8 +158,7 @@ async function finishSignIn(cookie, site, { fetchImpl } = {}) {
     return { type: "failed", error: `百智云：已读到网页登录态，但换取 API Key 失败（${exchanged.error}）` }
   }
   const profile = await fetchProfile(cookie, site, { fetchImpl })
-  return {
-    type: "success",
+  return signInSuccess({
     access: JSON.stringify({
       access_token: exchanged.apiKey,
       session_cookie: cookie,
@@ -168,7 +167,7 @@ async function finishSignIn(cookie, site, { fetchImpl } = {}) {
     expires: 0,
     accountId: profile?.name ?? "",
     uid: profile?.userId ?? "",
-  }
+  })
 }
 
 /**
