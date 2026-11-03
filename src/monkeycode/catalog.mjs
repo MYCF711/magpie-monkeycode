@@ -113,7 +113,12 @@ export function entryOf(raw) {
   const output = Number.isFinite(Number(raw.output_limit)) ? Number(raw.output_limit) : 0
   return {
     id,
-    apiId: uuid,
+    // ⚠⚠ 请求体里的 `model` 必须是**平台 model 字段的原值**（带档位前缀），
+    // 不是这个 UUID。2026-11-04 实测：同一个模型传 UUID 回 403 Forbidden、
+    // 传 `monkeycode-basic/glm-5.3-flash` 回 200（还带 SSE 正文）。
+    // 早先把它当 UUID 用，导致 21 个模型「全部不可用」的假结论。
+    apiId: upstream,
+    uuid,
     // 缓存里存平台的原始串；显示名由 prettyModelName 在读取时算（改文案不用重新拉目录）。
     name: upstream,
     displayName: prettyModelName(upstream),

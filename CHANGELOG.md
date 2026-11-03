@@ -3,6 +3,15 @@
 > 每个版本一节，**一条一行**，说用户能感知的变化。
 > 格式与规矩见 [UPDATING.md](./UPDATING.md)。
 
+## 0.2.15 — 2026-11-04
+
+**根因找到：网关要的 `model` 是平台 model 名，不是那条记录的 UUID**
+
+- 平台 `/api/v1/users/models` 每条有 `id`（UUID）和 `model`（`monkeycode-basic/glm-5.3-flash`）。**请求体里的 `model` 要用后者**：实测同一个模型传 UUID 回 `403 Forbidden`、传 model 名回 `200` 并吐出 SSE 正文
+- 之前把 UUID 当 `apiId` 用，于是可用性探测把 21 条全判成不可用（假结论）。改回来后真实情况是 **4 条可用**：`monkeycode-basic/glm-5.3-flash`、`minimax-m2.5`、`deepseek-flash`、`glm-5.1`
+- magpie 侧模型 id 仍是压平 slug（`monkeycode-basic-glm-5-3-flash`），`apiId` 指向带档位前缀的原名
+- 顺带确认这个百智云 SSO 新建的号其实是**有额度**的（`wallet`: balance 200000 / 每日 1000 万 token），只是 pro/ultra 档与部分模型没有权限
+
 ## 0.2.14 — 2026-11-04
 
 **账号一个模型都用不了时，卡片上直说原因**
