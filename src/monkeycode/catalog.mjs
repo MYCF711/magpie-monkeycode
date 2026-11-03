@@ -90,7 +90,9 @@ export function prettyModelName(raw) {
     : head
   const rest = parts.slice(1).map((part) => (/^[0-9]/.test(part) ? part : part.charAt(0).toUpperCase() + part.slice(1)))
   const pretty = [headBrand, ...rest].join("-")
-  const tier = prefix === undefined ? undefined : TIERS[prefix]
+  // 无前缀 = 不走订阅额度，**直接扣积分** —— 这一点必须写在名字里：
+  // 用户看着「每日额度 999 万 token」却一直在烧积分，就是因为选了无前缀的模型。
+  const tier = prefix === undefined ? "积分" : TIERS[prefix]
   return tier === undefined ? pretty : `${pretty} · ${tier}`
 }
 

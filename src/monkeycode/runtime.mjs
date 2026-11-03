@@ -463,25 +463,27 @@ export function makePlugin(site) {
             type: "oauth",
             label: `${site.displayName} 添加另一个账号`,
             /**
-             * 专门给「加第二个号」用：**一次性 profile**，不复用已有百智云登录态。
+             * 给「加第二个号」用：**一次性 profile**，且开的是 **MonkeyCode 自己的登录页**。
              *
-             * 默认那条「用百智云账号开通」走持久 profile —— 点加号时窗口里已经登录着
-             * 旧号，用户什么都没做就算成功，但读到的是同一个身份；magpie 按 uid 去重，
-             * 于是提示「已添加」而列表不变（2026-11-04 真机）。
+             * 两处都必须这样：
+             * 1. 一次性 profile —— 否则窗口里躺着上一个号的登录态，一开就"成功"，
+             *    读到的还是旧身份，magpie 按 uid 去重后列表不变（真机：提示已添加，账号只有一个）。
+             * 2. 开 `/login` 而不是百智云的授权页 —— 百智云是身份提供方，没有自助注册口；
+             *    MonkeyCode 的登录页才有「快速注册」，可以开一个**独立的猴子账号**，
+             *    不必先有第二个百智云账号。
              */
             async authorize() {
-              const names = ["sl-session", "baizhi_session"]
-              const domains = ["baizhi.cloud"]
               const browser = process.env.MAGPIE_PLUGIN_DISABLE_BROWSER === "1" ? undefined : findBrowser()
               if (!browser?.path) {
+                const error = "没找到可用的 Chromium 浏览器，无法开窗注册新账号。"
+                  + "请手动打开 " + site.loginUrl + " 注册后，用「API Key」方式粘贴网关凭据。"
                 return {
-                  url: "https://baizhi.cloud/console/",
+                  url: site.loginUrl,
                   opened: false,
                   method: "auto",
-                  instructions: `没找到可用的 Chromium 浏览器。请手动打开 https://baizhi.cloud/console/ 登录新账号，`
-                    + "然后改用「API Key」方式粘贴一行 JSON：{\"session_cookie\":\"sl-session=…; baizhi_session=…\"}",
+                  instructions: error,
                   async callback() {
-                    return { type: "failed", error: "没有可用的浏览器，无法开窗登录" }
+                    return { type: "failed", error }
                   },
                 }
               }
@@ -490,11 +492,10 @@ export function makePlugin(site) {
               try {
                 flow = await Promise.race([
                   startBrowserLogin({
-                    url: "https://baizhi.cloud/console/",
+                    url: site.loginUrl,
                     browser,
-                    // 关键：**不传 profileDir** → 一次性 profile，必须真的重新登一次。
-                    cookieNames: names,
-                    cookieDomains: domains,
+                    // 关键：**不传 profileDir** → 一次性 profile，必须真的重新登/注册。
+                    cookieNames: [site.sessionCookie],
                     timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
                     async accept() {
                       return true
@@ -507,10 +508,10 @@ export function makePlugin(site) {
                 flow = undefined
               }
               if (flow === undefined) {
-                const error = `受控浏览器没能启动（${startupError || "未知原因"}）。请手动打开 https://baizhi.cloud/console/ 登录，`
-                  + "再用「API Key」方式粘贴 {\"session_cookie\":\"sl-session=…; baizhi_session=…\"}。"
+                const error = `受控浏览器没能启动（${startupError || "未知原因"}）。`
+                  + "请手动打开 " + site.loginUrl + " 注册后，用「API Key」方式粘贴网关凭据。"
                 return {
-                  url: "https://baizhi.cloud/console/",
+                  url: site.loginUrl,
                   opened: false,
                   method: "auto",
                   instructions: error,
@@ -520,21 +521,32 @@ export function makePlugin(site) {
                 }
               }
               return {
-                url: "https://baizhi.cloud/console/",
+                url: site.loginUrl,
                 opened: true,
                 method: "auto",
-                instructions: "这是一个全新的窗口（不会复用已有登录态）—— 请登录你要**新增**的那个百智云账号。"
-                  + "登录完成后会自动开通它对应的 MonkeyCode 账号。",
+                instructions: "这是一个全新的窗口（不会复用已有登录态）。"
+                  + "\n· 开新号 → 点「快速注册」（手机号/邮箱，独立账号，不经过百智云）"
+                  + "\n· 已有百智云账号且想用另一个 → 点「百智云登录」"
+                  + "\n登录/注册完成后本页会自动添加。",
                 async callback() {
                   try {
                     const { cookie } = await flow.wait()
-                    const signed = await signInWithBaizhiSession(cookie, site)
+                    const issued = await exchangeSessionForKey(cookie, site)
+                    if (!issued.ok) {
+                      return { type: "failed", error: `已拿到 MonkeyCode 会话，但换取网关凭据失败（${issued.error}）` }
+                    }
+                    const profile = await fetchProfile(cookie, site)
                     return {
                       type: "success",
-                      access: JSON.stringify(signed.credential),
+                      access: JSON.stringify({
+                        access_token: issued.apiKey,
+                        signing_secret: issued.signingSecret,
+                        session_cookie: cookie,
+                        ...(profile?.userId === undefined ? {} : { user_id: profile.userId }),
+                      }),
                       expires: 0,
-                      accountId: signed.nickname ?? "",
-                      uid: signed.userId ?? "",
+                      accountId: profile?.nickname ?? "",
+                      uid: profile?.userId ?? "",
                     }
                   } catch (error) {
                     return { type: "failed", error: error instanceof Error ? error.message : String(error) }
