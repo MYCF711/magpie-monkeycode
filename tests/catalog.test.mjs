@@ -91,3 +91,19 @@ test("签名 prompt：没有 system 的请求必须补 FALLBACK_SYSTEM（否则�
   const patched = JSON.stringify({ ...JSON.parse(bare), system: FALLBACK_SYSTEM })
   assert.equal(signingPrompt(parseBodyQuietly(patched)), FALLBACK_SYSTEM)
 })
+
+test("平台的 context_limit 是软配置，MAGPIE_MONKEYCODE_CONTEXT_FLOOR 可以抬高", async () => {
+  const { entryOf } = await import("../src/monkeycode/catalog.mjs")
+  const raw = { id: "u", model: "m", context_limit: 200000, output_limit: 32000, interface_type: "anthropic" }
+  const before = entryOf(raw).context
+  assert.equal(before, 200000, "默认照平台给的值")
+  process.env.MAGPIE_MONKEYCODE_CONTEXT_FLOOR = "500000"
+  try {
+    // 实测：标的 200000，240K / 500K token 的请求都回 200 —— 所以可以按真实能力抬。
+    assert.equal(entryOf(raw).context, 500000)
+    // 平台给的值更大时不被压小。
+    assert.equal(entryOf({ ...raw, context_limit: 1048576 }).context, 1048576)
+  } finally {
+    delete process.env.MAGPIE_MONKEYCODE_CONTEXT_FLOOR
+  }
+})

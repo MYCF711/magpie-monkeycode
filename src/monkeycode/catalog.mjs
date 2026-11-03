@@ -109,7 +109,13 @@ export function entryOf(raw) {
   if (typeof raw.interface_type === "string" && raw.interface_type !== "anthropic") return undefined
   const id = slugOf(upstream) || slugOf(uuid)
   if (id.length === 0) return undefined
-  const context = Number.isFinite(Number(raw.context_limit)) ? Number(raw.context_limit) : 0
+  const platformContext = Number.isFinite(Number(raw.context_limit)) ? Number(raw.context_limit) : 0
+  // 平台的 context_limit 是**软配置**，不是硬限制：2026-11-04 实测
+  // `monkeycode/deepseek-flash` 标的 200000，实际 240K、500K token 的请求都是 200。
+  // 想按真实能力给 agent 用更大的窗口，就设 MAGPIE_MONKEYCODE_CONTEXT_FLOOR
+  // （例如 500000）—— 它只把下限抬高，不会压低平台给的更大值。
+  const floor = Number(process.env.MAGPIE_MONKEYCODE_CONTEXT_FLOOR ?? "")
+  const context = Number.isFinite(floor) && floor > 0 ? Math.max(platformContext, floor) : platformContext
   const output = Number.isFinite(Number(raw.output_limit)) ? Number(raw.output_limit) : 0
   return {
     id,
