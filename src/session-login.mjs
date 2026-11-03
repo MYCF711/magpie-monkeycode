@@ -17,9 +17,9 @@
 // 注册表查找；这里只补 CDP 轮询。窗口用一次性 user-data-dir，不碰用户日常配置。
 
 import { spawn } from "node:child_process"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { createServer } from "node:net"
-import { tmpdir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { findBrowser } from "./browser-login.mjs"
@@ -73,9 +73,7 @@ async function cdpCookies(pageWsUrl) {
     ws.addEventListener("error", () => reject(new Error("CDP WebSocket 连不上")), { once: true })
   })
   try {
-    await cdpSend(ws, 1, "Network.enable")
-    const result = await cdpSend(ws, 2, "Network.getAllCookies")
-    return result?.cookies ?? []
+    return await cookiesOn(ws)
   } finally {
     try {
       ws.close()
@@ -109,19 +107,119 @@ function sessionCookieOf(cookies, names, domains) {
   return names.map((name) => `${name}=${found.get(name)}`).join("; ")
 }
 
+/** 从已连上的 CDP 会话读全部 cookie。 */
+async function cookiesOn(ws) {
+  await cdpSend(ws, 1, "Network.enable").catch(() => {})
+  const result = await cdpSend(ws, 2, "Network.getAllCookies")
+  return result?.cookies ?? []
+}
+
+/**
+ * 持久 profile 目录（登录态跨次保留）。
+ *
+ * 为什么要持久：用户登录一次百智云之后，MonkeyCode 国内站与国际站的 SSO
+ * 应该都**不用再登**（两家共用同一个百智云身份）。临时 profile 每次都把
+ * cookie 丢掉，等于每站都要重登一遍 —— 华为云的 codearts/officeace 正是靠
+ * 同一个持久 profile 做到「一个账号两个供应商都能进」。
+ *
+ * 放在 `~/.cache/magpie/`：与 magpie 自己的缓存同处，卸载插件不会误删用户数据。
+ */
+export function profileDirFor(name) {
+  return join(homedir(), ".cache", "magpie", `monkeycode-${name}`, "profile")
+}
+
+/**
+ * 起一个受控浏览器并连上它的页面。
+ *
+ * @returns {Promise<{ ws: WebSocket, close: () => void, profileDir: string, persistent: boolean }>}
+ */
+export async function openControlledBrowser({ url = "about:blank", profileDir, headless = false, browser = findBrowser() } = {}) {
+  if (!browser?.path) throw new Error("没有可用的 Chromium 浏览器（Chrome / Edge / 国产 Chromium 都行）")
+  const persistent = profileDir !== undefined
+  const profile = persistent ? profileDir : mkdtempSync(join(tmpdir(), "magpie-session-login-"))
+  if (persistent) mkdirSync(profile, { recursive: true })
+  const port = await freePort()
+  const child = spawn(browser.path, [
+    `--remote-debugging-port=${port}`,
+    `--user-data-dir=${profile}`,
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-extensions",
+    "--disable-background-networking",
+    ...(headless ? ["--headless=new"] : []),
+    url,
+  ], { stdio: "ignore", windowsHide: headless })
+
+  const close = () => {
+    try {
+      child.kill()
+    } catch {}
+    // 持久 profile 是用户的登录态，不能删；只有临时目录才回收。
+    if (!persistent) {
+      try {
+        rmSync(profile, { recursive: true, force: true })
+      } catch {}
+    }
+  }
+
+  const deadline = Date.now() + 60_000
+  let pageWs = ""
+  while (Date.now() < deadline && pageWs.length === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    try {
+      const pages = await getJson(`http://127.0.0.1:${port}/json/list`)
+      pageWs = pages.find((page) => page.type === "page" && page.webSocketDebuggerUrl)?.webSocketDebuggerUrl ?? ""
+    } catch {}
+  }
+  if (pageWs.length === 0) {
+    close()
+    throw new Error("受控浏览器没有打开调试端口（浏览器可能吞掉了 --remote-debugging-port）")
+  }
+  const ws = new WebSocket(pageWs)
+  await new Promise((resolve, reject) => {
+    ws.addEventListener("open", resolve, { once: true })
+    ws.addEventListener("error", () => reject(new Error("CDP WebSocket 连不上")), { once: true })
+  })
+  return { ws, close, profileDir: profile, persistent }
+}
+
+/**
+ * 静默读一次 cookie（无头 + 持久 profile，读完就关）。
+ *
+ * 用来回答「这个账号是不是已经登过了」——登过就不用再弹窗。
+ * 读不到返回 undefined，不抛错（没登录是正常路径）。
+ */
+export async function readCookiesSilently({ url = "about:blank", cookieName, cookieNames, cookieDomains, profileDir, browser } = {}) {
+  const names = Array.isArray(cookieNames) && cookieNames.length > 0 ? cookieNames : [cookieName]
+  let handle
+  try {
+    handle = await openControlledBrowser({ url, profileDir, headless: true, browser })
+    const cookies = await cookiesOn(handle.ws).catch(() => [])
+    return sessionCookieOf(cookies, names, cookieDomains)
+  } catch {
+    return undefined
+  } finally {
+    try {
+      handle?.ws?.close()
+    } catch {}
+    try {
+      handle?.close?.()
+    } catch {}
+  }
+}
+
 /**
  * 打开受控浏览器，等用户登录，返回会话 cookie。
  *
- * 与脚手架的 `chromiumLogin` 不同：那里「拿到 cookie 就返回」，这里只是
- * 「读到会话」，是否登录成功由调用方拿它去换 Key 才知道。
- *
  * @param {object} options
  * @param {string} options.url 登录页
- * @param {string} options.cookieName 会话 cookie 名
+ * @param {string} [options.cookieName] 单枚会话 cookie 名
+ * @param {string[]} [options.cookieNames] 多枚（全部到齐才算登录完成）
+ * @param {string[]} [options.cookieDomains] 只认这些域（不含子域）
+ * @param {string} [options.profileDir] 传了就持久化（登录态跨次保留）
  * @param {number} [options.timeoutMs]
- * @param {(cookie: string) => Promise<boolean>} options.accept 拿到 cookie 后的判据（换 Key 成功才算登录）
+ * @param {(cookie: string) => Promise<boolean>} options.accept 拿到 cookie 后的判据
  * @param {AbortSignal} [options.signal]
- * @param {object} [options.browser] 测试注入
  */
 export async function browserLogin({
   url,
@@ -131,50 +229,18 @@ export async function browserLogin({
   timeoutMs = BROWSER_LOGIN_TIMEOUT_MS,
   accept,
   signal,
+  profileDir,
   browser = findBrowser(),
 }) {
   // 单名（MonkeyCode）与多名（百智云要 sl-session + baizhi_session）两种用法。
   const names = Array.isArray(cookieNames) && cookieNames.length > 0 ? cookieNames : [cookieName]
-  if (!browser?.path) throw new Error("没有可用的 Chromium 浏览器（Chrome / Edge / 国产 Chromium 都行）")
 
-  const profile = mkdtempSync(join(tmpdir(), "magpie-session-login-"))
-  const port = await freePort()
-  const child = spawn(browser.path, [
-    `--remote-debugging-port=${port}`,
-    `--user-data-dir=${profile}`,
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--disable-extensions",
-    "--disable-background-networking",
-    url,
-  ], { stdio: "ignore", windowsHide: false })
-
-  const cleanup = () => {
-    try {
-      child.kill()
-    } catch {}
-    try {
-      rmSync(profile, { recursive: true, force: true })
-    } catch {}
-  }
-
+  const handle = await openControlledBrowser({ url, profileDir, browser })
   const deadline = Date.now() + timeoutMs
   try {
-    let pageWs = ""
     while (Date.now() < deadline) {
       if (signal?.aborted) throw new Error("登录已取消")
-      try {
-        const pages = await getJson(`http://127.0.0.1:${port}/json/list`)
-        pageWs = pages.find((page) => page.type === "page" && page.webSocketDebuggerUrl)?.webSocketDebuggerUrl ?? ""
-        if (pageWs) break
-      } catch {}
-      await new Promise((resolve) => setTimeout(resolve, 300))
-    }
-    if (!pageWs) throw new Error("受控浏览器没有打开调试端口（浏览器可能吞掉了 --remote-debugging-port）")
-
-    while (Date.now() < deadline) {
-      if (signal?.aborted) throw new Error("登录已取消")
-      const cookies = await cdpCookies(pageWs).catch(() => [])
+      const cookies = await cookiesOn(handle.ws).catch(() => [])
       const cookie = sessionCookieOf(cookies, names, cookieDomains)
       // 没有会话就继续等；有会话但换不到 Key（匿名会话）也继续等 ——
       // 用户可能只是还没在窗口里点完登录。
@@ -183,8 +249,8 @@ export async function browserLogin({
     }
     throw new Error("登录超时：浏览器窗口里还没有完成登录")
   } finally {
-    cleanup()
+    handle.close()
   }
 }
 
-export const _internal = { cdpCookies, freePort, sessionCookieOf }
+export const _internal = { cdpCookies, freePort, sessionCookieOf, cookiesOn }

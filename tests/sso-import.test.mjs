@@ -57,3 +57,16 @@ test("nextUnimported 跳过已导入的，全部导完返回 undefined", () => {
 test("账号库不存在时返回空数组而不是抛错", () => {
   assert.deepEqual(readBaizhiSessions("/definitely/not/here/plugin-auth.json"), [])
 })
+
+test("持久 profile 目录在 ~/.cache/magpie 下，不同用途互不干扰", async () => {
+  const { profileDirFor } = await import("../src/session-login.mjs")
+  const baizhi = profileDirFor("baizhi")
+  const cn = profileDirFor("monkeycode")
+  const intl = profileDirFor("monkeycodeintl")
+  assert.ok(baizhi.includes(".cache") && baizhi.includes("magpie"), baizhi)
+  assert.ok(baizhi.endsWith("profile"), baizhi)
+  assert.notEqual(baizhi, cn)
+  assert.notEqual(cn, intl)
+  // 百智云那条必须与站点无关 —— 两站共用同一个百智云登录态。
+  assert.equal(profileDirFor("baizhi"), baizhi)
+})

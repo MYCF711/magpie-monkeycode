@@ -17,6 +17,7 @@ import { createUsageCache } from "../usage-cache.mjs"
 
 import { SITES } from "../sites.mjs"
 import { browserLogin, BROWSER_LOGIN_TIMEOUT_MS } from "./browser-login.mjs"
+import { profileDirFor, readCookiesSilently } from "../session-login.mjs"
 import { importOneBaizhiAccount, signInWithBaizhiSession } from "./sso-import.mjs"
 import {
   claimCheckin, cookieOf, exchangeSessionForKey, fetchPlan, fetchProfile, fetchWallet, PLAN_LABELS,
@@ -121,6 +122,8 @@ async function signInWithBrowser(site, { fetchImpl, signal } = {}) {
     const { cookie } = await browserLogin({
       url: site.loginUrl ?? `${site.platformBaseUrl}/`,
       cookieName: site.sessionCookie,
+      // 同一站第二次登录复用 profile（cookie 还在就不用再输账号密码）。
+      profileDir: profileDirFor(site.id),
       timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
       signal,
       async accept(candidate) {
@@ -238,25 +241,35 @@ export function makePlugin(site) {
               return {
                 url: "https://baizhi.cloud/console/",
                 instructions: "在打开的窗口里登录你的百智云账号；登录完成后本页会自动开通 MonkeyCode。"
-                  + "要再加一个号，登录另一个百智云账号后再点一次。",
+                  + "登录过一次之后，另一站会直接复用这个登录态（同一 profile），不用再登。",
                 method: "auto",
                 opened: true,
                 async callback() {
+                  // 百智云的 cookie 名与域：控制台同时下发 sl-session（设备/风控）
+                  // 与 baizhi_session（登录），两枚都要；且必须精确落在 baizhi.cloud 上
+                  // （同名 sl-session 还有两枚属于 ai-models / agent-toolkit 子域）。
+                  const names = ["sl-session", "baizhi_session"]
+                  const domains = ["baizhi.cloud"]
+                  const profileDir = profileDirFor("baizhi")
                   let baizhiCookie
                   try {
-                    const result = await browserLogin({
-                      url: "https://baizhi.cloud/console/",
-                      // 控制台同时下发 sl-session（设备/风控）与 baizhi_session（登录），
-                      // 两枚都要；且必须精确落在 baizhi.cloud 上（同名 sl-session
-                      // 还有两枚属于 ai-models / agent-toolkit 子域）。
-                      cookieNames: ["sl-session", "baizhi_session"],
-                      cookieDomains: ["baizhi.cloud"],
-                      timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
-                      async accept() {
-                        return true
-                      },
-                    })
-                    baizhiCookie = result.cookie
+                    // ① 先静默：profile 里已有登录态就直接用（不弹窗、不等用户）。
+                    //    这就是「一个百智云账号，两站都能进」的那一步。
+                    baizhiCookie = await readCookiesSilently({ cookieNames: names, cookieDomains: domains, profileDir })
+                    // ② 没有才让人登一次（持久 profile：这次登完，下次静默命中）。
+                    if (baizhiCookie === undefined) {
+                      const result = await browserLogin({
+                        url: "https://baizhi.cloud/console/",
+                        cookieNames: names,
+                        cookieDomains: domains,
+                        profileDir,
+                        timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
+                        async accept() {
+                          return true
+                        },
+                      })
+                      baizhiCookie = result.cookie
+                    }
                   } catch (error) {
                     return { type: "failed", error: error instanceof Error ? error.message : String(error) }
                   }

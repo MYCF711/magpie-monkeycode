@@ -14,7 +14,7 @@ import { usage as buildUsage, usageWindow } from "../quota.mjs"
 import { createUsageCache } from "../usage-cache.mjs"
 
 import { parseCredential, hasToken } from "../credential.mjs"
-import { browserLogin, BROWSER_LOGIN_TIMEOUT_MS } from "../session-login.mjs"
+import { browserLogin, BROWSER_LOGIN_TIMEOUT_MS, profileDirFor } from "../session-login.mjs"
 import {
   exchangeSessionForKey, fetchProfile, fetchRemoteModels, fetchUsage, fetchWallet,
 } from "./credits.mjs"
@@ -121,6 +121,9 @@ async function signInWithBrowser(site, { fetchImpl, signal } = {}) {
   try {
     await browserLogin({
       url: site.loginUrl,
+      // 持久 profile：登录一次之后，MonkeyCode 的「用百智云账号开通」能直接复用
+      // 这份登录态（两处共用同一个 profile 目录），不用再登。
+      profileDir: profileDirFor("baizhi"),
       // 控制台同时下发 sl-session（设备/风控）与 baizhi_session（登录），
       // 实测**两枚都要**：只带 baizhi_session 时 /api/v1/user/profile 会 401。
       cookieNames: [...site.sessionCookies],

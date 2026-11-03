@@ -107,6 +107,28 @@ GET https://monkeycode-ai.com/api/v1/users/login
 必须按 `domain === 'baizhi.cloud'` 精确匹配 —— 另两枚属于 `ai-models.app.baizhi.cloud`
 与 `agent-toolkit.app.baizhi.cloud`。
 
+### 持久 profile：一个百智云账号，两站都能进
+
+华为云那个包（`magpie-officeace`）的做法是给每个账号建一个持久浏览器目录
+（`~/.cache/magpie/officeace-huawei-<account>/profile`）：用户在里面登录一次华为云 IAM，
+之后 CodeArts 与 OfficeAce 两个供应商打开控制台都直接用这份 profile，谁都不用再登。
+两家的**凭据**其实是各自换的（codearts 是华为云 AK/SK，officeace 是 MaaS 的 key），
+共享的只是「登录动作」。
+
+本插件照同一模式：
+
+| 用途 | profile 目录 |
+|---|---|
+| 百智云登录（唯一一份） | `~/.cache/magpie/monkeycode-baizhi/profile` |
+| MonkeyCode 国内站自己的登录 | `~/.cache/magpie/monkeycode-monkeycode/profile` |
+| MonkeyCode 国际站自己的登录 | `~/.cache/magpie/monkeycode-monkeycodeintl/profile` |
+
+「用百智云账号开通」的顺序是：**先静默读 profile**（无头，不弹窗）→ 有 cookie 就直接 SSO
+→ 没有才开窗让用户登一次。所以一个百智云账号登过之后，国内站与国际站的第二次开通都是秒完成。
+
+⚠ 持久 profile 意味着 cookie 会留在磁盘上，这是「不用重复登录」的代价 —— 与华为云包同一取舍，
+不想留就删目录（只影响下次要重登）。
+
 ### 登录页
 
 两家的登录窗口都直接开各自的 `/login`，而不是首页或商场的深链：
