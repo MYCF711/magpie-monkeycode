@@ -3,6 +3,18 @@
 > 每个版本一节，**一条一行**，说用户能感知的变化。
 > 格式与规矩见 [UPDATING.md](./UPDATING.md)。
 
+## 0.2.17 — 2026-11-04
+
+**修「没有 system 的请求一律 403」；顺带确认了 DeepSeek 的版本指纹**
+
+- 网关要求被签名的 prompt **非空**：实测同一个模型，不带 system → `403 invalid ohmyagent request`，带 system → `200`。用户直接对话时 magpie 经常不发 system，等于整条链路走不通
+- `loader` 现在在**缺 system 时补一句 `You are a helpful assistant.`** 并据它签名（`FALLBACK_SYSTEM`），请求体同步改写
+- 指纹比对（同一组 5 个知识锚点）：`deepseek-v4.1-flash-1017`、`baizhi/deepseek-flash`、`baizhi/deepseek-v4-flash`、`monkeycode/deepseek-flash` 答案**逐字相同**；对照组 `glm-5.3-flash` 明显不同 —— 判定这四个都是 **v4.1-flash**
+
+## 0.2.16 — 2026-11-04
+
+- 测试跟上「`apiId` 是平台 model 名而不是 UUID」这条语义（0.2.15 的收尾）
+
 ## 0.2.15 — 2026-11-04
 
 **根因找到：网关要的 `model` 是平台 model 名，不是那条记录的 UUID**
