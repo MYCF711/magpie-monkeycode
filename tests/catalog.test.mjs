@@ -22,7 +22,7 @@ test("entryOf：UUID 进 apiId，model 名压成 slug；隐藏与 OpenAI 协议�
   // 实测：同一个模型传 UUID 回 403、传 model 名回 200 —— 请求体里的 model 是后者。
   assert.equal(entry.apiId, "monkeycode-pro/hy3", "请求体里的 model 是平台 model 名（带档位前缀）")
   assert.equal(entry.uuid, "8ca0c30e-08ac-42d5-a4db-584d52fabe98", "UUID 留着做区分，但不用于请求")
-  assert.equal(entry.context, 200000)
+  assert.equal(entry.context, 1048576, "按 1M 报（平台标的 200K 是软配置）")
   assert.equal(entry.image, true)
   assert.equal(entryOf({ id: "x", model: "y", interface_type: "openai_responses" }), undefined)
   assert.equal(entryOf({ model: "y" }), undefined, "没有 id 的条目不能用")
@@ -92,18 +92,23 @@ test("签名 prompt：没有 system 的请求必须补 FALLBACK_SYSTEM（否则�
   assert.equal(signingPrompt(parseBodyQuietly(patched)), FALLBACK_SYSTEM)
 })
 
-test("平台的 context_limit 是软配置，MAGPIE_MONKEYCODE_CONTEXT_FLOOR 可以抬高", async () => {
-  const { entryOf } = await import("../src/monkeycode/catalog.mjs")
+test("上下文窗口按 1M 报（平台标的 200K 是软配置，实测 500K 都能过）", async () => {
+  const { entryOf, KNOWN_CONTEXT } = await import("../src/monkeycode/catalog.mjs")
   const raw = { id: "u", model: "m", context_limit: 200000, output_limit: 32000, interface_type: "anthropic" }
-  const before = entryOf(raw).context
-  assert.equal(before, 200000, "默认照平台给的值")
-  process.env.MAGPIE_MONKEYCODE_CONTEXT_FLOOR = "500000"
-  try {
-    // 实测：标的 200000，240K / 500K token 的请求都回 200 —— 所以可以按真实能力抬。
-    assert.equal(entryOf(raw).context, 500000)
-    // 平台给的值更大时不被压小。
-    assert.equal(entryOf({ ...raw, context_limit: 1048576 }).context, 1048576)
-  } finally {
-    delete process.env.MAGPIE_MONKEYCODE_CONTEXT_FLOOR
-  }
+  // magpie 拿这个值决定 agent 何时压缩上下文：报 200K 就会在 200K 丢历史。
+  assert.equal(entryOf(raw).context, 1048576)
+  assert.equal(KNOWN_CONTEXT, 1048576)
+  // 平台给得更大时不被压小。
+  assert.equal(entryOf({ ...raw, context_limit: 2000000 }).context, 2000000)
+})
+
+test("签名 prompt：没有 system 的请求必须补 FALLBACK_SYSTEM（否则网关一律 403）", async () => {
+  const { FALLBACK_SYSTEM, parseBodyQuietly, signingPrompt } = await import("../src/monkeycode/signing.mjs")
+  assert.ok(FALLBACK_SYSTEM.length > 0)
+  // 无 system 的请求：prompt 为空 —— 这就是网关回 invalid ohmyagent request 的原因。
+  const bare = JSON.stringify({ model: "m", messages: [{ role: "user", content: "hi" }] })
+  assert.equal(signingPrompt(parseBodyQuietly(bare)), "")
+  // 补上 system 之后就有东西可签了。
+  const patched = JSON.stringify({ ...JSON.parse(bare), system: FALLBACK_SYSTEM })
+  assert.equal(signingPrompt(parseBodyQuietly(patched)), FALLBACK_SYSTEM)
 })

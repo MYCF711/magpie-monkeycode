@@ -20,7 +20,7 @@ import { browserLogin, BROWSER_LOGIN_TIMEOUT_MS } from "./browser-login.mjs"
 import { profileDirFor, readCookiesSilently, startBrowserLogin } from "../session-login.mjs"
 import { findBrowser } from "../browser-login.mjs"
 import { importOneBaizhiAccount, signInWithBaizhiSession } from "./sso-import.mjs"
-import { isStale, prettyModelName, readCatalog, refreshCatalog } from "./catalog.mjs"
+import { KNOWN_CONTEXT, isStale, prettyModelName, readCatalog, refreshCatalog } from "./catalog.mjs"
 import {
   claimCheckin, cookieOf, exchangeSessionForKey, fetchPlan, fetchProfile, fetchWallet, PLAN_LABELS,
 } from "./credits.mjs"
@@ -55,7 +55,8 @@ function configModels(site) {
         api: { id: model.apiId, url: site.gatewayBaseUrl, npm: SDK },
         status: "active",
         cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
-        limit: { context: model.context || 0, output: model.output || MAX_OUTPUT },
+        // 老缓存里可能还存着平台的 200000 —— 读取时按已知真实窗口兜底。
+        limit: { context: Math.max(model.context || 0, KNOWN_CONTEXT), output: model.output || MAX_OUTPUT },
         modalities: { input: model.image ? ["text", "image"] : ["text"], output: ["text"] },
         capabilities: {
           temperature: true,

@@ -25,6 +25,12 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
+/**
+ * 已知的真实窗口下限：实测 500K token 的请求照样 200，DeepSeek v4 系列是 1M。
+ * 平台标的 200K 只是配置值，照它报会让 agent 提前丢上下文。
+ */
+export const KNOWN_CONTEXT = 1_048_576
+
 /** 缓存多久算过期（毫秒）。 */
 export const CATALOG_TTL_MS = 6 * 60 * 60 * 1000
 
@@ -112,10 +118,14 @@ export function entryOf(raw) {
   const platformContext = Number.isFinite(Number(raw.context_limit)) ? Number(raw.context_limit) : 0
   // 平台的 context_limit 是**软配置**，不是硬限制：2026-11-04 实测
   // `monkeycode/deepseek-flash` 标的 200000，实际 240K、500K token 的请求都是 200。
-  // 想按真实能力给 agent 用更大的窗口，就设 MAGPIE_MONKEYCODE_CONTEXT_FLOOR
-  // （例如 500000）—— 它只把下限抬高，不会压低平台给的更大值。
+  //
+  // 既然平台老实不到底，这里**直接按 1M 报**（DeepSeek v4 系列的真实窗口）：
+  // magpie 用这个值决定 agent 什么时候压缩上下文，报小了它会在 200K 就开始丢历史，
+  // 而模型明明还能吃 —— 用户看到的就是「请求超出其 200K 上下文，已跳过」。
+  // 想更保守可以设 MAGPIE_MONKEYCODE_CONTEXT_FLOOR（只抬不压）。
   const floor = Number(process.env.MAGPIE_MONKEYCODE_CONTEXT_FLOOR ?? "")
-  const context = Number.isFinite(floor) && floor > 0 ? Math.max(platformContext, floor) : platformContext
+  const known = Number.isFinite(floor) && floor > 0 ? Math.max(floor, KNOWN_CONTEXT) : KNOWN_CONTEXT
+  const context = Math.max(platformContext, known)
   const output = Number.isFinite(Number(raw.output_limit)) ? Number(raw.output_limit) : 0
   return {
     id,
