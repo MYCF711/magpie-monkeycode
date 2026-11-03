@@ -15,12 +15,37 @@
 import { usage as buildUsage, usageWindow } from "../quota.mjs"
 import { createUsageCache } from "../usage-cache.mjs"
 
+import { readFileSync } from "node:fs"
+import { homedir } from "node:os"
+import { join } from "node:path"
+
 import { SITES } from "../sites.mjs"
 import { browserLogin, BROWSER_LOGIN_TIMEOUT_MS } from "./browser-login.mjs"
 import { profileDirFor, readCookiesSilently, startBrowserLogin } from "../session-login.mjs"
 import { findBrowser } from "../browser-login.mjs"
 import { importOneBaizhiAccount, signInWithBaizhiSession } from "./sso-import.mjs"
 import { KNOWN_CONTEXT, isStale, prettyModelName, readCatalog, refreshCatalog } from "./catalog.mjs"
+
+/**
+ * magpie 里是不是已经有这个 uid 的账号了。
+ *
+ * ⚠ 只读：插件对 magpie 的目录**只有读的份**，多账号的唯一载体是 authorize 的
+ * 返回值，插件不碰这些文件。
+ *
+ * 为什么要看这个：点「添加另一个账号」但复用到了同一个身份时，magpie 会按 uid
+ * 去重 —— 界面提示「已添加」，而列表里还是那一个。不把这件事说出来，用户会
+ * 一直以为插件坏了（2026-11-04 真机）。
+ */
+function existingAccountWithUid(providerId, uid) {
+  if (typeof uid !== "string" || uid.length === 0) return false
+  try {
+    const store = JSON.parse(readFileSync(join(homedir(), ".config", "magpie", "plugin-auth.json"), "utf8"))
+    return Object.entries(store ?? {}).some(([key, record]) =>
+      (key === providerId || key.startsWith(`${providerId}#`)) && record?.uid === uid)
+  } catch {
+    return false
+  }
+}
 import {
   claimCheckin, cookieOf, exchangeSessionForKey, fetchPlan, fetchProfile, fetchWallet, PLAN_LABELS,
 } from "./credits.mjs"
@@ -363,12 +388,18 @@ export function makePlugin(site) {
                   }
                   try {
                     const signed = await signInWithBaizhiSession(baizhiCookie, site)
+                    const duplicated = existingAccountWithUid(site.id, signed.userId ?? "")
                     return {
                       type: "success",
                       access: JSON.stringify(signed.credential),
                       expires: 0,
                       accountId: signed.nickname ?? "",
                       uid: signed.userId ?? "",
+                      // 同一个授权身份只能对应一个 MonkeyCode 账号 —— 复用到旧身份时
+                      // magpie 会按 uid 去重。说清楚，别让「提示成功但列表没变」变成谜。
+                      ...(duplicated
+                        ? { message: "这个百智云账号已经开通过 MonkeyCode（同一账号，凭据已更新）。要加新号，请换一个百智云账号登录，或用「添加另一个账号」。" }
+                        : {}),
                     }
                   } catch (error) {
                     return { type: "failed", error: error instanceof Error ? error.message : String(error) }
@@ -423,6 +454,91 @@ export function makePlugin(site) {
                 opened: true,
                 async callback() {
                   return signInWithBrowser(site)
+                },
+              }
+            },
+          },
+
+          {
+            type: "oauth",
+            label: `${site.displayName} 添加另一个账号`,
+            /**
+             * 专门给「加第二个号」用：**一次性 profile**，不复用已有百智云登录态。
+             *
+             * 默认那条「用百智云账号开通」走持久 profile —— 点加号时窗口里已经登录着
+             * 旧号，用户什么都没做就算成功，但读到的是同一个身份；magpie 按 uid 去重，
+             * 于是提示「已添加」而列表不变（2026-11-04 真机）。
+             */
+            async authorize() {
+              const names = ["sl-session", "baizhi_session"]
+              const domains = ["baizhi.cloud"]
+              const browser = process.env.MAGPIE_PLUGIN_DISABLE_BROWSER === "1" ? undefined : findBrowser()
+              if (!browser?.path) {
+                return {
+                  url: "https://baizhi.cloud/console/",
+                  opened: false,
+                  method: "auto",
+                  instructions: `没找到可用的 Chromium 浏览器。请手动打开 https://baizhi.cloud/console/ 登录新账号，`
+                    + "然后改用「API Key」方式粘贴一行 JSON：{\"session_cookie\":\"sl-session=…; baizhi_session=…\"}",
+                  async callback() {
+                    return { type: "failed", error: "没有可用的浏览器，无法开窗登录" }
+                  },
+                }
+              }
+              let flow
+              let startupError = ""
+              try {
+                flow = await Promise.race([
+                  startBrowserLogin({
+                    url: "https://baizhi.cloud/console/",
+                    browser,
+                    // 关键：**不传 profileDir** → 一次性 profile，必须真的重新登一次。
+                    cookieNames: names,
+                    cookieDomains: domains,
+                    timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
+                    async accept() {
+                      return true
+                    },
+                  }),
+                  new Promise((_, reject) => setTimeout(() => reject(new Error("浏览器启动超时（8 秒）")), 8_000)),
+                ])
+              } catch (error) {
+                startupError = error instanceof Error ? error.message : String(error)
+                flow = undefined
+              }
+              if (flow === undefined) {
+                const error = `受控浏览器没能启动（${startupError || "未知原因"}）。请手动打开 https://baizhi.cloud/console/ 登录，`
+                  + "再用「API Key」方式粘贴 {\"session_cookie\":\"sl-session=…; baizhi_session=…\"}。"
+                return {
+                  url: "https://baizhi.cloud/console/",
+                  opened: false,
+                  method: "auto",
+                  instructions: error,
+                  async callback() {
+                    return { type: "failed", error }
+                  },
+                }
+              }
+              return {
+                url: "https://baizhi.cloud/console/",
+                opened: true,
+                method: "auto",
+                instructions: "这是一个全新的窗口（不会复用已有登录态）—— 请登录你要**新增**的那个百智云账号。"
+                  + "登录完成后会自动开通它对应的 MonkeyCode 账号。",
+                async callback() {
+                  try {
+                    const { cookie } = await flow.wait()
+                    const signed = await signInWithBaizhiSession(cookie, site)
+                    return {
+                      type: "success",
+                      access: JSON.stringify(signed.credential),
+                      expires: 0,
+                      accountId: signed.nickname ?? "",
+                      uid: signed.userId ?? "",
+                    }
+                  } catch (error) {
+                    return { type: "failed", error: error instanceof Error ? error.message : String(error) }
+                  }
                 },
               }
             },
