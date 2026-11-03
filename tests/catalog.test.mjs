@@ -48,3 +48,14 @@ test("fetchCatalog：平台没有可用模型时报失败，不返回空表", as
   const result = await fetchCatalog("c", site, { fetchImpl: async () => Response.json({ data: [] }) })
   assert.equal(result.ok, false)
 })
+
+test("prettyModelName：平台的原样标识翻成人能读的名字", async () => {
+  const { prettyModelName } = await import("../src/monkeycode/catalog.mjs")
+  assert.equal(prettyModelName("monkeycode-basic/glm-5.3-flash"), "GLM-5.3-Flash · 基础档")
+  assert.equal(prettyModelName("monkeycode-pro/hy3"), "HY3 · 专业档")
+  assert.equal(prettyModelName("monkeycode-ultra/qwen3.7-max"), "Qwen3.7-Max · 旗舰档")
+  assert.equal(prettyModelName("qwen3.6-plus"), "Qwen3.6-Plus")
+  assert.equal(prettyModelName("minimax-m2.5"), "MiniMax-M2.5")
+  assert.equal(prettyModelName("deepseek-flash"), "DeepSeek-Flash")
+  assert.equal(prettyModelName(""), "")
+})

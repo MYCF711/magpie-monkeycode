@@ -33,6 +33,55 @@ export function catalogPath(providerId) {
   return join(homedir(), ".cache", "magpie", `monkeycode-models-${providerId}.json`)
 }
 
+/** 模型品牌的美化写法（平台给的是 `glm-5.3-flash` 这种小写串）。 */
+const BRANDS = Object.freeze({
+  glm: "GLM",
+  qwen: "Qwen",
+  deepseek: "DeepSeek",
+  kimi: "Kimi",
+  minimax: "MiniMax",
+  hy: "HY",
+  gpt: "GPT",
+  claude: "Claude",
+})
+
+/** 档位前缀 → 中文标签。没前缀的表示「不走订阅额度」，就不加后缀。 */
+const TIERS = Object.freeze({
+  "monkeycode-basic": "基础档",
+  "monkeycode-pro": "专业档",
+  "monkeycode-ultra": "旗舰档",
+})
+
+/**
+ * 把平台的原样标识翻成人能读的名字。
+ *
+ * 平台给的是 `<档位>/<模型>`：`monkeycode-basic/glm-5.3-flash`、`qwen3.6-plus`…
+ * 同一个模型会在不同档位各出现一条（`deepseek-flash` 有三条：无前缀 / basic / pro），
+ * 因为它们是**不同的额度池**，不是同一个东西点三遍。
+ *
+ * @param {string} raw 平台给的 model 字段
+ * @returns {string} 例如 `GLM-5.3-Flash · 基础档`
+ */
+export function prettyModelName(raw) {
+  const text = String(raw ?? "").trim()
+  if (text.length === 0) return ""
+  const slash = text.indexOf("/")
+  const prefix = slash > 0 ? text.slice(0, slash) : undefined
+  const base = slash > 0 ? text.slice(slash + 1) : text
+  // 品牌段大写、其余段首字母大写（数字段原样）。
+  const parts = base.split("-").filter((part) => part.length > 0)
+  // 第一段可能是「品牌+版本」连写：`qwen3.6`、`hy3`、`glm`。拆出字母前缀再映射。
+  const head = parts.length > 0 ? parts[0] : base
+  const matched = head.match(/^([A-Za-z]+)(.*)$/)
+  const headBrand = matched
+    ? (BRANDS[matched[1].toLowerCase()] ?? (matched[1].charAt(0).toUpperCase() + matched[1].slice(1))) + (matched[2] ?? "")
+    : head
+  const rest = parts.slice(1).map((part) => (/^[0-9]/.test(part) ? part : part.charAt(0).toUpperCase() + part.slice(1)))
+  const pretty = [headBrand, ...rest].join("-")
+  const tier = prefix === undefined ? undefined : TIERS[prefix]
+  return tier === undefined ? pretty : `${pretty} · ${tier}`
+}
+
 /** magpie 侧的模型 id：只留 slug 字符（斜杠会被读成 provider 边界）。 */
 function slugOf(raw) {
   return String(raw ?? "")
@@ -59,7 +108,9 @@ export function entryOf(raw) {
   return {
     id,
     apiId: uuid,
+    // 缓存里存平台的原始串；显示名由 prettyModelName 在读取时算（改文案不用重新拉目录）。
     name: upstream,
+    displayName: prettyModelName(upstream),
     context,
     output,
     image: raw.support_image === true,

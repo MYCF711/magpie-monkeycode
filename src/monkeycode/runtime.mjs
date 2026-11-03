@@ -20,7 +20,7 @@ import { browserLogin, BROWSER_LOGIN_TIMEOUT_MS } from "./browser-login.mjs"
 import { profileDirFor, readCookiesSilently, startBrowserLogin } from "../session-login.mjs"
 import { findBrowser } from "../browser-login.mjs"
 import { importOneBaizhiAccount, signInWithBaizhiSession } from "./sso-import.mjs"
-import { isStale, readCatalog, refreshCatalog } from "./catalog.mjs"
+import { isStale, prettyModelName, readCatalog, refreshCatalog } from "./catalog.mjs"
 import {
   claimCheckin, cookieOf, exchangeSessionForKey, fetchPlan, fetchProfile, fetchWallet, PLAN_LABELS,
 } from "./credits.mjs"
@@ -43,7 +43,8 @@ function configModels(site) {
     for (const model of cached.models) {
       out[model.id] = {
         id: model.id,
-        name: model.name,
+        // 显示名在读取时算：老缓存里没有 displayName 也能立刻变好看，不用重拉目录。
+        name: model.displayName ?? prettyModelName(model.name),
         apiId: model.apiId,
         api: { id: model.apiId, url: site.gatewayBaseUrl, npm: SDK },
         status: "active",
