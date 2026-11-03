@@ -18,6 +18,7 @@ import { findBrowser } from "../browser-login.mjs"
 import { openInSystemBrowser } from "../system-open.mjs"
 import { BROWSER_LOGIN_TIMEOUT_MS, openControlledBrowser, profileDirFor, startBrowserLogin } from "../session-login.mjs"
 import { readDesktopBaizhiSession } from "../monkeycode/desktop-session.mjs"
+import { loginWithPhoneCode, sendPhoneCode } from "./phone-login.mjs"
 import {
   exchangeSessionForKey, fetchProfile, fetchUsage, fetchWallet,
 } from "./credits.mjs"
@@ -337,6 +338,60 @@ export function makeBaizhiPlugin(site = BAIZHI) {
             type: "api",
             label: `${site.displayName} API Key`,
             placeholder: "sk-…（也接受 {\"access_token\":\"sk-…\",\"session_cookie\":\"…\"}）",
+          },
+          {
+            type: "oauth",
+            label: `${site.displayName} 手机号验证码登录`,
+            /**
+             * **纯 API，不开窗**：`/api/v1/user/phone_code` 发短信 →
+             * `/api/v1/user/login/phone` 换会话 → `finishSignIn` 换 `sk-` Key。
+             *
+             * 这就是用户在浏览器里走的那条路（「接受验证码后直接就进 baizhi 的界面」），
+             * 只是不进浏览器 —— 于是也不存在「窗口里登完了、插件读不到 cookie」。
+             *
+             * ⚠ 发码有副作用（真的会发一条短信），所以只在「用户已经填了手机号、
+             *   正在等验证码」这一刻调一次，发失败要把原因显示在验证码那一格上。
+             */
+            get prompts() {
+              return [
+                { type: "text", key: "phone", message: "手机号", placeholder: "注册百智云用的手机号" },
+                { type: "text", key: "code", message: "短信验证码", placeholder: "没收到就重开一次这个方式" },
+              ]
+            },
+            async ask(inputs) {
+              const filled = (key) => inputs !== null && typeof inputs === "object" && Object.prototype.hasOwnProperty.call(inputs, key)
+              if (!filled("phone")) return this.prompts[0]
+              if (!filled("code")) {
+                const sent = await sendPhoneCode({ phone: String(inputs?.phone ?? "").trim(), site })
+                // 发失败也要把「验证码」这一格给出来 —— 否则用户卡在上一格，看不到原因。
+                return sent.ok ? this.prompts[1] : { ...this.prompts[1], message: `验证码没发出去：${sent.error}` }
+              }
+              return null
+            },
+            async authorize(inputs) {
+              const phone = typeof inputs?.phone === "string" ? inputs.phone.trim() : ""
+              const code = typeof inputs?.code === "string" ? inputs.code.trim() : ""
+              // 立刻返回（铁律 2）：网络请求全在 callback。
+              return {
+                url: site.loginUrl,
+                // 不开窗：opened:true 只是别让 magpie 去拉起系统浏览器。
+                opened: true,
+                method: "auto",
+                instructions: "正在用手机号验证码登录（纯接口，不会开窗口）。",
+                async callback() {
+                  if (phone.length === 0 || code.length === 0) {
+                    return { type: "failed", error: "手机号或验证码没填" }
+                  }
+                  try {
+                    const session = await loginWithPhoneCode({ phone, code, site })
+                    if (!session.ok) return { type: "failed", error: session.error }
+                    return await finishSignIn(session.cookie, site)
+                  } catch (error) {
+                    return { type: "failed", error: error instanceof Error ? error.message : String(error) }
+                  }
+                },
+              }
+            },
           },
           {
             type: "oauth",

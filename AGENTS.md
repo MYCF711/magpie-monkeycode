@@ -31,6 +31,8 @@
 | 验证码挑战 | `POST /api/v1/public/captcha/challenge` | 201 → `{token, challenge:{c,s,d}}`；c 道 PoW，本地用 `solveChallenge` 解 |
 | 验证码兑换 | `POST /api/v1/public/captcha/redeem` | body `{token, solutions}` → 201 `{token:"…", success:true}`，这个 token 就是 `captcha_token` |
 | 账号密码不对 | — | 上游回 `{"code":10606,"message":"登录失败"}` —— 这个码要映射成「账号或密码不对」，不要说成验证码问题 |
+| 发短信验证码（百智云） | `POST /api/v1/user/phone_code`（主站 `baizhi.cloud`） | body **`{phone, kind:"login"}`**；缺 `kind` 回 400 参数错误，号没注册回「手机号未注册」。**有副作用，只在用户点了这个方式时发一次** |
+| 手机号验证码登录（百智云） | `POST /api/v1/user/login/phone` | body **`{phone, code}`** → Set-Cookie 下发 `baizhi_session` + `sl-session`（两枚都要带回去换 Key）。验证码过期回 `phone code not found or expired` |
 | 网页登录（内嵌 WebView） | 命令 `mc_web_login` / `mc_web_login_cancel` | 桌面用 WebView2 完成，等价于我们的受控浏览器 |
 | 微信扫码 | 命令 `baizhi_wechat_start` / `baizhi_wechat_poll` | start 取二维码、poll 轮询结果 —— **纯 API，可无窗完成** |
 | 当前用户 | `GET /api/v1/users/status` | 返回 `data.user.{id,name}`（是 `name` 不是 `nickname`） |
