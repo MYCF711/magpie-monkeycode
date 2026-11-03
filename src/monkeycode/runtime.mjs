@@ -680,6 +680,36 @@ export function makePlugin(site) {
               if (body === undefined && request) body = await request.clone().text()
               let text = typeof body === "string" ? body : undefined
 
+              // ── 把 magpie 的模型 id 换回上游认得的那串 ──────────────────
+              //
+              // magpie 发过来的 `model` 是**它自己的模型 id**（我们返回的 `id`，
+              // 斜杠被压成连字符，例如 `monkeycode-basic-deepseek-flash`）——
+              // 它不会用我们在 config 里给的 `api.id`：
+              //   magpie: `api: { id: m.id ?? was?.api.id ?? key }`（m 是 config 的条目）
+              // 而上游只认**平台原值**（带档位前缀的 `monkeycode-basic/deepseek-flash`）：
+              //   2026-11-04 实测 —— 原值 200，slug 回 `403 Forbidden`，
+              //   UUID 回 `403 Forbidden`，裸名 `deepseek-flash` 也 403。
+              //
+              // 所以这一层必须换回来。映射来源就是目录缓存（`id → apiId`）。
+              // 换完**再**补 system、**再**算签名：签名覆盖的是 prompt（system），
+              // 与 model 无关，但顺序上仍以「最终要发出去的 body」为准最稳。
+              if (text !== undefined) {
+                const catalog = readCatalog(site.id)
+                if (catalog !== undefined && catalog.models.length > 0) {
+                  const byId = new Map(catalog.models.map((model) => [model.id, model.apiId]))
+                  try {
+                    const parsed = JSON.parse(text)
+                    const key = typeof parsed.model === "string" ? parsed.model : ""
+                    const mapped = byId.get(key)
+                    if (mapped !== undefined && mapped !== key && mapped.length > 0) {
+                      parsed.model = mapped
+                      text = JSON.stringify(parsed)
+                      body = text
+                    }
+                  } catch {}
+                }
+              }
+
               // 网关要求被签名的 prompt 非空：没有 system 的请求它会一律回
               // `403 invalid ohmyagent request`（2026-11-04 实测：不带 system 的
               // 探测 403、带 system 的同样请求 200）。用户直接对话时 magpie 经常
