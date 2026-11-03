@@ -22,8 +22,9 @@ import { join } from "node:path"
 import { SITES } from "../sites.mjs"
 import { browserLogin, BROWSER_LOGIN_TIMEOUT_MS } from "./browser-login.mjs"
 import { profileDirFor, readCookiesSilently, startBrowserLogin } from "../session-login.mjs"
-import { findBrowser } from "../browser-login.mjs"
-import { importOneBaizhiAccount, signInWithBaizhiSession } from "./sso-import.mjs"
+
+import { signInWithBaizhiSession } from "./sso-import.mjs"
+import { readDesktopMonkeyCodeSession } from "./desktop-session.mjs"
 import { KNOWN_CONTEXT, isStale, prettyModelName, readCatalog, refreshCatalog } from "./catalog.mjs"
 import { AGREE_PROTOCOL_JS } from "../baizhi/runtime.mjs"
 
@@ -69,24 +70,6 @@ const LOGIN_AUTOPILOT_JS = `(() => {
   return 'ok';
 })()`
 
-/**
- * 观猹账号密码登录专用：自动点「账号密码登录」再把协议勾掉。
- *
- * MonkeyCode 的 `/login` 默认展示「百智云登录 - 推荐」；想用**观猹自己的
- * 账号密码**（注册时绑过微信、但登录走账号密码）必须先进那个入口。
- * 用户要的是这个，不是扫码（2026-11-04 真机明确要求）。
- */
-const PASSWORD_LOGIN_AUTOPILOT_JS = `(() => {
-  const boxes = [...document.querySelectorAll('input[type=checkbox]')].filter((el) => !el.checked);
-  for (const box of boxes) box.click();
-  const pwd = [...document.querySelectorAll('button,a,[role=button],div,span')]
-    .find((el) => ((el.textContent || '') + '').trim() === '账号密码登录');
-  if (pwd) {
-    pwd.click();
-    return 'switch-to-password';
-  }
-  return 'ok';
-})()`
 import {
   claimCheckin, cookieOf, exchangeSessionForKey, fetchPlan, fetchProfile, fetchWallet, PLAN_LABELS,
 } from "./credits.mjs"
@@ -241,8 +224,10 @@ async function signInWithBrowser(site, { fetchImpl, signal } = {}) {
     const { cookie } = await browserLogin({
       url: site.loginUrl ?? `${site.platformBaseUrl}/`,
       cookieName: site.sessionCookie,
-      // 同一站第二次登录复用 profile（cookie 还在就不用再输账号密码）。
-      profileDir: profileDirFor(site.id),
+      // ⚠ **一次性 profile**（刻意不传 profileDir）：复用持久 profile 时，
+      // 窗口一开就带着上一个号的登录态，读到的还是旧身份 —— magpie 按 uid
+      // 去重后列表不变，用户看到的是「提示已添加，账号还是那一个」。
+      // 加第二个号 = 再点一次这里 = 一个干净窗口，自己挑登录方式。
       timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
       signal,
       async accept(candidate) {
@@ -343,6 +328,72 @@ export function makePlugin(site) {
             type: "api",
             label: `${site.displayName} API Key`,
             placeholder: '{"access_token":"oma_…","signing_secret":"…"}',
+          },
+          {
+            type: "oauth",
+            label: `${site.displayName} 从本机客户端导入`,
+            /**
+             * 读**本机 MonkeyCode 桌面客户端**已登录的会话，直接换一对网关凭据。
+             *
+             * 为什么这是最省事的一条：桌面版登录完会把 `monkeycode_ai_session`
+             * 明文写进 `%APPDATA%\com.chaitin.baizhi.monkeycode\monkeycode-cookies.json`
+             * （见 `desktop-session.mjs`）。插件本地读文件即可，不开窗、不扫码、
+             * 不用再输一次密码 —— 用户装过桌面版就等于插件已登录。
+             *
+             * `authorize()` 里只做**本地读文件**（毫秒级），换 Key 与读资料全在
+             * `callback()`：铁律 2 要求 authorize 立刻返回，网络请求不能放这儿。
+             */
+            async authorize() {
+              const desk = readDesktopMonkeyCodeSession()
+              if (desk === undefined) {
+                const help = "没读到本机 MonkeyCode 桌面客户端的登录态。"
+                  + "先用桌面版登录一次（登录成功后它会把会话写到本机），再回来点这个；"
+                  + "也可以改用「浏览器登录」或「API Key」。"
+                return {
+                  url: site.loginUrl ?? `${site.platformBaseUrl}/`,
+                  opened: false,
+                  method: "auto",
+                  instructions: help,
+                  async callback() {
+                    return { type: "failed", error: "本机没有 MonkeyCode 桌面客户端的登录态" }
+                  },
+                }
+              }
+              return {
+                url: site.loginUrl ?? `${site.platformBaseUrl}/`,
+                // 真的不需要任何窗口：opened:true 只是告诉 magpie「别再开系统浏览器」。
+                opened: true,
+                method: "auto",
+                instructions: "正在用本机 MonkeyCode 客户端的登录态开通（不会弹任何窗口）。",
+                async callback() {
+                  try {
+                    const issued = await exchangeSessionForKey(desk.cookie, site)
+                    if (!issued.ok) {
+                      return {
+                        type: "failed",
+                        error: `读到桌面客户端会话，但换取网关凭据失败（${issued.error}）。`
+                          + "桌面版里的登录可能已经过期 —— 重新打开桌面版登录一次即可。",
+                      }
+                    }
+                    const profile = await fetchProfile(desk.cookie, site)
+                    return {
+                      type: "success",
+                      access: JSON.stringify({
+                        access_token: issued.apiKey,
+                        signing_secret: issued.signingSecret,
+                        session_cookie: desk.cookie,
+                        ...(profile?.userId === undefined ? {} : { user_id: profile.userId }),
+                      }),
+                      expires: 0,
+                      accountId: profile?.nickname ?? "",
+                      uid: profile?.userId ?? "",
+                    }
+                  } catch (error) {
+                    return { type: "failed", error: error instanceof Error ? error.message : String(error) }
+                  }
+                },
+              }
+            },
           },
           {
             type: "oauth",
@@ -451,34 +502,6 @@ export function makePlugin(site) {
           },
           {
             type: "oauth",
-            label: `${site.displayName} 从已登录的百智云账号批量开通`,
-            /**
-             * 走 magpie 里**已经登录**的百智云账号：每个账号点一次，插件自动挑
-             * 下一个没开通过的号做 SSO。适合已经有一堆百智云账号的情况。
-             */
-            async authorize() {
-              return {
-                url: site.loginUrl ?? `${site.platformBaseUrl}/`,
-                instructions: "自动用下一个还没开通过的百智云账号开通 MonkeyCode（后台完成，不会弹窗）。",
-                method: "auto",
-                opened: true,
-                async callback() {
-                  const result = await importOneBaizhiAccount(site)
-                  if (!result.ok) return { type: "failed", error: result.error }
-                  return {
-                    type: "success",
-                    access: result.access,
-                    expires: 0,
-                    accountId: result.accountId,
-                    uid: result.uid,
-                    message: result.remaining > 0 ? `还有 ${result.remaining} 个百智云账号可以继续导入` : "",
-                  }
-                },
-              }
-            },
-          },
-          {
-            type: "oauth",
             label: `${site.displayName} 浏览器登录`,
             /**
              * 立刻返回：真正等登录的是 callback()。
@@ -500,194 +523,6 @@ export function makePlugin(site) {
             },
           },
 
-          {
-            type: "oauth",
-            label: `${site.displayName} 添加另一个账号`,
-            /**
-             * 给「加第二个号」用：**一次性 profile**，且开的是 **MonkeyCode 自己的登录页**。
-             *
-             * 两处都必须这样：
-             * 1. 一次性 profile —— 否则窗口里躺着上一个号的登录态，一开就"成功"，
-             *    读到的还是旧身份，magpie 按 uid 去重后列表不变（真机：提示已添加，账号只有一个）。
-             * 2. 开 `/login` 而不是百智云的授权页 —— 百智云是身份提供方，没有自助注册口；
-             *    MonkeyCode 的登录页才有「快速注册」，可以开一个**独立的猴子账号**，
-             *    不必先有第二个百智云账号。
-             */
-            async authorize() {
-              const browser = process.env.MAGPIE_PLUGIN_DISABLE_BROWSER === "1" ? undefined : findBrowser()
-              if (!browser?.path) {
-                const error = "没找到可用的 Chromium 浏览器，无法开窗注册新账号。"
-                  + "请手动打开 " + site.loginUrl + " 注册后，用「API Key」方式粘贴网关凭据。"
-                return {
-                  url: site.loginUrl,
-                  opened: false,
-                  method: "auto",
-                  instructions: error,
-                  async callback() {
-                    return { type: "failed", error }
-                  },
-                }
-              }
-              let flow
-              let startupError = ""
-              try {
-                flow = await Promise.race([
-                  startBrowserLogin({
-                    url: site.loginUrl,
-                    browser,
-                    // 关键：**不传 profileDir** → 一次性 profile，必须真的重新登/注册。
-                    cookieNames: [site.sessionCookie],
-                    timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
-                    async accept() {
-                      return true
-                    },
-                  }),
-                  new Promise((_, reject) => setTimeout(() => reject(new Error("浏览器启动超时（8 秒）")), 8_000)),
-                ])
-              } catch (error) {
-                startupError = error instanceof Error ? error.message : String(error)
-                flow = undefined
-              }
-              if (flow === undefined) {
-                const error = `受控浏览器没能启动（${startupError || "未知原因"}）。`
-                  + "请手动打开 " + site.loginUrl + " 注册后，用「API Key」方式粘贴网关凭据。"
-                return {
-                  url: site.loginUrl,
-                  opened: false,
-                  method: "auto",
-                  instructions: error,
-                  async callback() {
-                    return { type: "failed", error }
-                  },
-                }
-              }
-              return {
-                url: site.loginUrl,
-                opened: true,
-                method: "auto",
-                instructions: "这是一个全新的窗口（不会复用已有登录态）。"
-                  + "\n· 开新号 → 点「快速注册」（手机号/邮箱，独立账号，不经过百智云）"
-                  + "\n· 已有百智云账号且想用另一个 → 点「百智云登录」"
-                  + "\n登录/注册完成后本页会自动添加。",
-                async callback() {
-                  try {
-                    const { cookie } = await flow.wait()
-                    const issued = await exchangeSessionForKey(cookie, site)
-                    if (!issued.ok) {
-                      return { type: "failed", error: `已拿到 MonkeyCode 会话，但换取网关凭据失败（${issued.error}）` }
-                    }
-                    const profile = await fetchProfile(cookie, site)
-                    return {
-                      type: "success",
-                      access: JSON.stringify({
-                        access_token: issued.apiKey,
-                        signing_secret: issued.signingSecret,
-                        session_cookie: cookie,
-                        ...(profile?.userId === undefined ? {} : { user_id: profile.userId }),
-                      }),
-                      expires: 0,
-                      accountId: profile?.nickname ?? "",
-                      uid: profile?.userId ?? "",
-                    }
-                  } catch (error) {
-                    return { type: "failed", error: error instanceof Error ? error.message : String(error) }
-                  }
-                },
-              }
-            },
-          },
-          {
-            type: "oauth",
-            label: `${site.displayName} 观猹账号密码登录`,
-            /**
-             * 给「我有观猹账号，用账号密码登」的人：全新窗口 + 自动切到「账号密码登录」。
-             *
-             * MonkeyCode 的 `/login` 默认是「百智云登录 - 推荐」，账号密码藏在第二个入口；
-             * 这个方法的窗口一开就会替你点进去，并把用户协议勾好 —— 你只需要填账号密码。
-             */
-            async authorize() {
-              const browser = process.env.MAGPIE_PLUGIN_DISABLE_BROWSER === "1" ? undefined : findBrowser()
-              const errorHint = "请手动打开 " + site.loginUrl + " → 点「账号密码登录」→ 登录后，"
-                + "用「API Key」方式粘贴网关凭据（oma_ 开头 + signing_secret）。"
-              if (!browser?.path) {
-                const error = "没找到可用的 Chromium 浏览器。" + errorHint
-                return {
-                  url: site.loginUrl,
-                  opened: false,
-                  method: "auto",
-                  instructions: error,
-                  async callback() {
-                    return { type: "failed", error }
-                  },
-                }
-              }
-              let flow
-              let startupError = ""
-              try {
-                flow = await Promise.race([
-                  startBrowserLogin({
-                    url: site.loginUrl,
-                    browser,
-                    // 一次性 profile：保证读到的是这次登录的会话。
-                    cookieNames: [site.sessionCookie],
-                    timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
-                    onPoll: PASSWORD_LOGIN_AUTOPILOT_JS,
-                    async accept() {
-                      return true
-                    },
-                  }),
-                  new Promise((_, reject) => setTimeout(() => reject(new Error("浏览器启动超时（8 秒）")), 8_000)),
-                ])
-              } catch (error) {
-                startupError = error instanceof Error ? error.message : String(error)
-                flow = undefined
-              }
-              if (flow === undefined) {
-                const error = `受控浏览器没能启动（${startupError || "未知原因"}）。` + errorHint
-                return {
-                  url: site.loginUrl,
-                  opened: false,
-                  method: "auto",
-                  instructions: error,
-                  async callback() {
-                    return { type: "failed", error }
-                  },
-                }
-              }
-              return {
-                url: site.loginUrl,
-                opened: true,
-                method: "auto",
-                instructions: "窗口已经替你切到「账号密码登录」（不会走微信扫码）。"
-                  + "\n填观猹账号 + 密码 → 点「登录」；协议插件会替你勾好。"
-                  + "\n登录完成后本页自动添加。",
-                async callback() {
-                  try {
-                    const { cookie } = await flow.wait()
-                    const issued = await exchangeSessionForKey(cookie, site)
-                    if (!issued.ok) {
-                      return { type: "failed", error: `已拿到 MonkeyCode 会话，但换取网关凭据失败（${issued.error}）` }
-                    }
-                    const profile = await fetchProfile(cookie, site)
-                    return {
-                      type: "success",
-                      access: JSON.stringify({
-                        access_token: issued.apiKey,
-                        signing_secret: issued.signingSecret,
-                        session_cookie: cookie,
-                        ...(profile?.userId === undefined ? {} : { user_id: profile.userId }),
-                      }),
-                      expires: 0,
-                      accountId: profile?.nickname ?? "",
-                      uid: profile?.userId ?? "",
-                    }
-                  } catch (error) {
-                    return { type: "failed", error: error instanceof Error ? error.message : String(error) }
-                  }
-                },
-              }
-            },
-          },
         ],
 
         /**

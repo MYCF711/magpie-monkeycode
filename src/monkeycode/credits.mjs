@@ -102,7 +102,13 @@ export async function fetchProfile(cookie, site, { fetchImpl = fetch, timeoutMs 
   const user = unwrapped.value.user
   if (user === null || typeof user !== "object") return {}
   const userId = typeof user.id === "string" && user.id.trim().length > 0 ? user.id.trim() : undefined
-  const nickname = typeof user.nickname === "string" && user.nickname.trim().length > 0 ? user.nickname.trim() : undefined
+  // ⚠ 上游实际下发的字段是 `name`（2026-11-04 桌面会话实测：`{ id, name: "观猹员 0632", … }`），
+  // 不是这里原先假设的 `nickname`。两个都认，再兜 `display_name` / `username`。
+  // 取不到就是空串（卡片回退供应商名），**不要**拿 `id` 顶上当名字（那串 uuid 是身份，不是名字）。
+  const nickname = ["nickname", "name", "display_name", "username"]
+    .map((key) => user[key])
+    .find((value) => typeof value === "string" && value.trim().length > 0)
+    ?.trim()
   return {
     ...(userId === undefined ? {} : { userId }),
     ...(nickname === undefined ? {} : { nickname }),

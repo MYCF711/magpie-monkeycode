@@ -1,44 +1,113 @@
-# 更新记录
+# MonkeyCode 与百智云 for magpie
 
-> 每个版本一节，**一条一行**，说用户能感知的变化。
-> 格式与规矩见 [UPDATING.md](./UPDATING.md)。
+把 **MonkeyCode 国内站 / 国际站 / 百智云** 三家接进 magpie，一个插件、三个独立供应商、三套互不干扰的账号池。
 
-## 0.2.2 — 2026-11-03
+```
+3 家供应商 · 国内站与国际站各自独立登录态
+桌面客户端直接导入，装过客户端就不用再登一次
+三个 provider 各有额度条、积分与每日签到
+```
 
-**百智云登录页换成真的那个；MonkeyCode 可以用百智云账号直接开通**
+---
 
-- 修百智云登录窗 404：`/console/login` 这个路由根本不存在，改开 `baizhi.cloud/console/`（上游用的就是它）
-- 百智云登录改成要**两枚** cookie：`sl-session`（设备/风控）+ `baizhi_session`（登录），且必须精确落在 `baizhi.cloud` 域 —— 同名 `sl-session` 还有两枚属于 ai-models / agent-toolkit 子域，按后缀匹配会随机拿错
-- 新增 MonkeyCode 登录方式「**用百智云账号开通**」：窗口里登录你的百智云账号（或换号再点一次），插件在后台无头完成 `monkeycode → baizhi.cloud/oauth/authorize → callback` 的 SSO 并换出网关凭据；首次登录时由 MonkeyCode 侧自动建号
-- 新增登录方式「**从已登录的百智云账号批量开通**」：直接读 magpie 里已经登录的百智云账号，每次点一下自动挑下一个还没开通过的号做 SSO，已导入的记在本地不会重复
+## 功能
 
-## 0.2.1 — 2026-11-03
+- **三家供应商，账号池分开** —— `monkeycode`（monkeycode-ai.com）、`monkeycodeintl`（monkeycode-ai.net）、`baizhi`（百智云）各自登录、各自计费，互不覆盖
+- **三种接入方式** —— 从本机 MonkeyCode 桌面客户端导入（最快）/ 浏览器登录（自己挑登录方式，插件不替你点）/ API Key 手填
+- **网关请求签名** —— MonkeyCode 的网关要求每个请求带 `X-OhMyAgent-Signature`；插件改过请求体（补 system、钳 max_tokens）之后会重新算签名
+- **额度与积分如实显示** —— 每日 token 额度、订阅档位（Basic / Pro / Ultra）、积分余额各一条读数；查不到的显示未知，不编造
+- **每日签到** —— 自动解开厂商的 PoW 验证题后签到；今天签过就不发写请求
+- **多账号按序兜底** —— 勾几账号就排几号，前一个额度用完自动换下一个
+- **模型目录跟随平台** —— 登录后跟随平台上下架；接口抖动时退回上次快照，不会把列表清空
 
-**修三个装完就撞上的问题**
+---
 
-- 修「已登录，但 magpie 无法列出它」：模型 id 里的 `/` 被 magpie 读成「provider/模型」分隔符，`monkeycode-basic/deepseek-flash` 之类会凭空长出三个不存在的供应商。现在 magpie 侧用压平的 id，上游真实 id 交给 `apiId`
-- 修登录窗口开错页面：MonkeyCode 直接开 `/login`（默认入口有「百智云登录」）；百智云改开控制台登录页 —— 之前开的是大模型商店，没登录态时它只会渲染一片「登录状态已失效」，用户以为账号坏了
-- 修国际站登录超时：换凭据请求的超时从 10 秒提到 30 秒（国际站实测单次 11 秒以上），且登录窗口里遇到网络超时**继续等**而不是直接判失败
+## 模型
 
-## 0.2.0 — 2026-11-03
+**DeepSeek / GLM / Kimi / Qwen / MiniMax** —— 各家最新的都在，登录后跟随平台目录上下架。
 
-**新增第三个供应商：百智云（BaiZhiCloud）**
+| 供应商 | 代表模型 | 上下文 | 备注 |
+|---|---|---|---|
+| `monkeycode` | `monkeycode-basic/deepseek-flash` | 200K | 每日额度内免费，按档位（basic / pro / ultra）分池 |
+| `monkeycode` | `monkeycode-basic/glm-5.3-flash` | 200K | 同上 |
+| `monkeycode` | `monkeycode-pro/deepseek-flash` | 200K | pro / ultra 档模型需要对应订阅，未订阅时标记为已锁定 |
+| `baizhi` | `deepseek-v4-pro` | 1,048,576 | 按量扣积分；四条 DeepSeek 是长上下文档 |
+| `baizhi` | `deepseek-v4-flash` | 1,048,576 | 同上，更便宜的一档 |
+| `baizhi` | `glm-5.3` / `kimi-k3` / `qwen3.8-max` | 200K | 按量计费 |
 
-- 新增 `baizhi` 供应商：`https://ai-models.app.baizhi.cloud/api/anthropic/v1`，与 MonkeyCode 两站并列，账号体系完全独立（按量计费、没有每日额度、没有签到）
-- 登录两条路：浏览器登录（在控制台登录后自动取出账号下的 `sk-` Key）与 API Key（`sk-…` 直接粘，也接受带 session cookie 的 JSON）
-- 模型目录走远端（`GET /api/anthropic/v1/models`）：登录后跟随平台上下架；拉不到时退回 15 条内置表，不返回空列表
-- 额度卡片：可用积分、每日积分（零点过期，用官方 `runsOutAt` 字段表达）、充值积分、今日消耗
-- 模型能力保守声明：只有 4 条 DeepSeek 声明 1,048,576 上下文，图片只给明确支持看图的模型
-- 通用件抽到 `src/platform-http.mjs`、`src/credential.mjs`、`src/session-login.mjs`，MonkeyCode 与百智云共用，行为不变
+思考档位按各家自己声明的透传。图片能力只给明确支持看图的模型标 `image`，其余一律 text-only（不猜）。
 
-## 0.1.0 — 2026-11-03
+> 只列各家的最新与热门。模型目录随时上下架，全表抄进 README 一个月就过期；
+> 装好以后 `magpie plugin list` 拿到的才是真实的全部。
 
-**首个版本：MonkeyCode 国内站 + 国际站，一个包两个供应商**
+---
 
-- 新增 `monkeycode`（monkeycode-ai.com）与 `monkeycodeintl`（monkeycode-ai.net）两个供应商，各自独立的登录态与账号池
-- 登录两条路：浏览器登录（插件开一次性的受控窗口，登录完成后自动把网页会话换成网关凭据）与 API Key 录入（粘贴 `{"access_token":"oma_…","signing_secret":"…"}`，或 `oma_…:密钥`）
-- 推理走 Anthropic Messages，按网关要求对每个请求的 prompt 现算 `X-OhMyAgent-Signature`（改 body 后签名跟着重算）
-- 模型目录内置 9 条（basic / pro / ultra 三档额度的 deepseek 前缀模型 + 逐次扣积分的 deepseek 与 GLM-5）；网关没有远端目录接口，所以不假装能拉新
-- 额度卡片：每日额度（计费 token）与积分余额两条读数，订阅档位（Basic / Pro / Ultra）显示在套餐名上
-- 每日签到：自动解开厂商的 PoW 验证题后签到，已在签过的不发写请求；验证题形态变了就如实回报「需要手动签到」
-- 没有续期端点：凭据是长期静态材料，插件不会每隔半小时发一次注定失败的刷新请求
+## 签到
+
+MonkeyCode 与百智云都支持每日签到（解开厂商的 PoW 验证题后自动完成）。幂等：今天签过就不会再发写请求。
+签到失败不影响推理 —— 额度照常可用，只是当天没拿到奖励。
+
+---
+
+## 安装
+
+在 magpie 的 **插件 → 发现** 搜 **MonkeyCode 与百智云**，点**安装**。
+
+装好后先选**一种**登录方式，最快的是「从本机客户端导入」：
+
+- 装过 MonkeyCode 桌面版并登录过 → 点「从本机客户端导入」，一两秒就好，不弹任何窗口
+- 没装过 → 点「浏览器登录」，在打开的窗口里自己挑扫码 / 支付宝 / 抖音 / GitHub / 观猹 / 账号密码；插件只做一件事：等你登完，读会话、换网关凭据
+- 已经有网关密钥 → 点「API Key」，粘 `{"access_token":"oma_…","signing_secret":"…"}`（也接受 `oma_…:密钥` 一行）
+
+想加第二个账号：再点一次「浏览器登录」—— 每次都是干净窗口，不会读到上一个号的登录态。
+
+### 命令行
+
+```bash
+# 从 npm（推荐）
+magpie plugin add magpie-monkeycode
+
+# 从仓库源码（拿最新代码，不走 npm）
+magpie plugin add github:MYCF711/magpie-monkeycode
+```
+
+装完确认：
+
+```bash
+magpie plugin list
+# magpie-monkeycode  on
+#   monkeycode (MonkeyCode 猴子编程, 9 models)  signed in as 观猹员 ####
+#   monkeycodeintl (MonkeyCode International, 9 models)
+#   baizhi (百智云, 15 models)  signed in as 观猹员 ####
+```
+
+---
+
+## 常见问题
+
+**「从本机客户端导入」说没读到登录态？** 桌面版要**先登录成功**才会把会话写到本机。打开桌面版登一次，再回来点。
+
+**导入时说「桌面版里的登录可能已经过期」？** 桌面版的会话有有效期（通常几天到一个月）。重新打开桌面版，它会自己续期；或者直接用「浏览器登录」。
+
+**为什么我加第二个号，列表还是只有一个？** magpie 按上游账号 id 去重 —— 同一个账号点两次只会更新凭据、不会变成两个。要加新号，得在窗口里**换一个账号登录**。
+
+**为什么模型列表里有「已锁定」的？** MonkeyCode 的 pro / ultra 档模型需要对应订阅才能用，未订阅时插件照实列出来并标记，不是 bug。
+
+**额度条显示「剩余额度未知」？** 平台接口暂时读不到（网络抖动或未登录态查额度）。推理不受影响，下一轮刷新会恢复。
+
+---
+
+## 参考源
+
+| 来源 | 用在哪 |
+|---|---|
+| [magpie 插件脚手架](https://github.com/usemagpie/magpie-plugin-scaffold) | 钩子契约、`src/` 通用件（`session-login` / `desktop-import` / `browser-login` / `quota` / `store` 等） |
+| [magpie-Jet-Hub](https://github.com/Betsy20/magpie-Jet-Hub) | MonkeyCode 供应商的协议取证（端点、签名头、错误码） |
+| MonkeyCode 桌面客户端（`com.chaitin.baizhi.monkeycode`） | cookie 落盘位置与字段形态（用于「从本机客户端导入」） |
+| Anthropic Messages API | 推理报文形态（MonkeyCode 走 `/v1/messages`） |
+
+## 许可
+
+MIT，见 [LICENSE](./LICENSE)；归属说明见 [NOTICE.md](./NOTICE.md)。
+
+> 更新记录：[CHANGELOG.md](./CHANGELOG.md)
