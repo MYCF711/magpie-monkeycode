@@ -171,7 +171,10 @@ test("quota: 既没有 used 也没有 amount/limit、又没声明 textOnly → �
 test("quota: text-only 窗口必须显式声明，且必须有 display", () => {
   const w = usageWindow({ name: "积分", textOnly: true, display: "1,234 剩余（上限未知）" })
   assert.equal(w.used, undefined)
-  assert.equal(w.textOnly, undefined) // 不是 magpie 的字段，不能漏进去
+  // ⚠ 2026-11-04 真机更正：`textOnly` **必须**出现在窗口对象上。
+  // 宿主见到没有 used 的窗口会抛「used 必填（收到 undefined）」，
+  // 它靠这个字段判断「这是有意的纯文字窗口」；早先模板里的断言是反的。
+  assert.equal(w.textOnly, true)
   assert.throws(() => usageWindow({ name: "积分", textOnly: true }), /必须有 display/)
   assert.throws(() => usageWindow({ name: "积分", textOnly: true, display: "x", used: 5 }), /不能再给/)
 })

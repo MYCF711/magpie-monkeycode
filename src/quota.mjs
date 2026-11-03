@@ -107,6 +107,11 @@ export function usageWindow(w = {}) {
         `${who}: textOnly 窗口必须有 display —— 没有占比又没有文字，卡片上就只剩一个空标签`,
       )
     }
+    // ⚠ `textOnly` 必须**跟着回到 magpie 里**：宿主见到没有 `used` 的窗口会抛
+    // 「used 必填（收到 undefined）」，它靠这个字段判断「这是有意的纯文字窗口」。
+    // 早先的实现把它当调用参数剔掉了，结果就是真机上报
+    // 「暂时无法获取额度：窗口 "今日消耗": used 必填」。
+    out.textOnly = true
     // 官方 #468 结论：没有 used 的窗口路由不计入。这不是错，但调用方要知道。
     return out
   }

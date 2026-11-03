@@ -167,3 +167,16 @@ test("已知能力表：只有 4 条 deepseek 声明窗口，图片只给明确�
   assert.equal(knownBaizhiModel("deepseek-v4-flash-vision-exp").image, true)
   assert.equal(knownBaizhiModel("glm-5").image, undefined, "不知道就不写，不是写 false")
 })
+
+test("textOnly 窗口必须把标记带到 magpie（否则宿主报 used 必填）", async () => {
+  const { usageWindow } = await import("../src/quota.mjs")
+  const window = usageWindow({ name: "今日消耗", textOnly: true, display: "12 积分 / 3 次调用" })
+  assert.equal(window.textOnly, true, "宿主靠这个字段判断「有意的纯文字窗口」")
+  assert.equal(window.used, undefined)
+  assert.equal(window.display, "12 积分 / 3 次调用")
+  // 真机上「今日消耗」就是这么构造的：确认 usage 输出里那一条带 textOnly。
+  const plugin = await makeBaizhiPlugin()({ client: {} })
+  const usage = await plugin.auth.usage(async () => auth)
+  const today = (usage.windows ?? []).find((w) => w.name === "今日消耗")
+  if (today !== undefined) assert.equal(today.textOnly, true)
+})
