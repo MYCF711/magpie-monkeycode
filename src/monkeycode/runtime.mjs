@@ -67,6 +67,25 @@ const LOGIN_AUTOPILOT_JS = `(() => {
   }
   return 'ok';
 })()`
+
+/**
+ * 观猹账号密码登录专用：自动点「账号密码登录」再把协议勾掉。
+ *
+ * MonkeyCode 的 `/login` 默认展示「百智云登录 - 推荐」；想用**观猹自己的
+ * 账号密码**（注册时绑过微信、但登录走账号密码）必须先进那个入口。
+ * 用户要的是这个，不是扫码（2026-11-04 真机明确要求）。
+ */
+const PASSWORD_LOGIN_AUTOPILOT_JS = `(() => {
+  const boxes = [...document.querySelectorAll('input[type=checkbox]')].filter((el) => !el.checked);
+  for (const box of boxes) box.click();
+  const pwd = [...document.querySelectorAll('button,a,[role=button],div,span')]
+    .find((el) => ((el.textContent || '') + '').trim() === '账号密码登录');
+  if (pwd) {
+    pwd.click();
+    return 'switch-to-password';
+  }
+  return 'ok';
+})()`
 import {
   claimCheckin, cookieOf, exchangeSessionForKey, fetchPlan, fetchProfile, fetchWallet, PLAN_LABELS,
 } from "./credits.mjs"
@@ -552,6 +571,98 @@ export function makePlugin(site) {
                   + "\n· 开新号 → 点「快速注册」（手机号/邮箱，独立账号，不经过百智云）"
                   + "\n· 已有百智云账号且想用另一个 → 点「百智云登录」"
                   + "\n登录/注册完成后本页会自动添加。",
+                async callback() {
+                  try {
+                    const { cookie } = await flow.wait()
+                    const issued = await exchangeSessionForKey(cookie, site)
+                    if (!issued.ok) {
+                      return { type: "failed", error: `已拿到 MonkeyCode 会话，但换取网关凭据失败（${issued.error}）` }
+                    }
+                    const profile = await fetchProfile(cookie, site)
+                    return {
+                      type: "success",
+                      access: JSON.stringify({
+                        access_token: issued.apiKey,
+                        signing_secret: issued.signingSecret,
+                        session_cookie: cookie,
+                        ...(profile?.userId === undefined ? {} : { user_id: profile.userId }),
+                      }),
+                      expires: 0,
+                      accountId: profile?.nickname ?? "",
+                      uid: profile?.userId ?? "",
+                    }
+                  } catch (error) {
+                    return { type: "failed", error: error instanceof Error ? error.message : String(error) }
+                  }
+                },
+              }
+            },
+          },
+          {
+            type: "oauth",
+            label: `${site.displayName} 观猹账号密码登录`,
+            /**
+             * 给「我有观猹账号，用账号密码登」的人：全新窗口 + 自动切到「账号密码登录」。
+             *
+             * MonkeyCode 的 `/login` 默认是「百智云登录 - 推荐」，账号密码藏在第二个入口；
+             * 这个方法的窗口一开就会替你点进去，并把用户协议勾好 —— 你只需要填账号密码。
+             */
+            async authorize() {
+              const browser = process.env.MAGPIE_PLUGIN_DISABLE_BROWSER === "1" ? undefined : findBrowser()
+              const errorHint = "请手动打开 " + site.loginUrl + " → 点「账号密码登录」→ 登录后，"
+                + "用「API Key」方式粘贴网关凭据（oma_ 开头 + signing_secret）。"
+              if (!browser?.path) {
+                const error = "没找到可用的 Chromium 浏览器。" + errorHint
+                return {
+                  url: site.loginUrl,
+                  opened: false,
+                  method: "auto",
+                  instructions: error,
+                  async callback() {
+                    return { type: "failed", error }
+                  },
+                }
+              }
+              let flow
+              let startupError = ""
+              try {
+                flow = await Promise.race([
+                  startBrowserLogin({
+                    url: site.loginUrl,
+                    browser,
+                    // 一次性 profile：保证读到的是这次登录的会话。
+                    cookieNames: [site.sessionCookie],
+                    timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
+                    onPoll: PASSWORD_LOGIN_AUTOPILOT_JS,
+                    async accept() {
+                      return true
+                    },
+                  }),
+                  new Promise((_, reject) => setTimeout(() => reject(new Error("浏览器启动超时（8 秒）")), 8_000)),
+                ])
+              } catch (error) {
+                startupError = error instanceof Error ? error.message : String(error)
+                flow = undefined
+              }
+              if (flow === undefined) {
+                const error = `受控浏览器没能启动（${startupError || "未知原因"}）。` + errorHint
+                return {
+                  url: site.loginUrl,
+                  opened: false,
+                  method: "auto",
+                  instructions: error,
+                  async callback() {
+                    return { type: "failed", error }
+                  },
+                }
+              }
+              return {
+                url: site.loginUrl,
+                opened: true,
+                method: "auto",
+                instructions: "窗口已经替你切到「账号密码登录」（不会走微信扫码）。"
+                  + "\n填观猹账号 + 密码 → 点「登录」；协议插件会替你勾好。"
+                  + "\n登录完成后本页自动添加。",
                 async callback() {
                   try {
                     const { cookie } = await flow.wait()
