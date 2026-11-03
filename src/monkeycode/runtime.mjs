@@ -335,6 +335,11 @@ export function makePlugin(site) {
             label: `${site.displayName} API Key`,
             placeholder: '{"access_token":"oma_…","signing_secret":"…"}',
           },
+          // ⚠ 「从本机客户端导入」**只在国内站提供**。桌面客户端导出的
+          // `monkeycode-cookies.json` 是**国内站**的会话；拿它去打国际站的
+          // `/api/v1/users/models` 实测一律 401（AGENTS 0.6）。国际站要登，
+          // 必须走国际站自己的登录（0.2 的一次性窗口 / 0.7 的判据）。
+          ...(site.id === "monkeycode" ? [
           {
             type: "oauth",
             label: `${site.displayName} 从本机客户端导入`,
@@ -401,6 +406,7 @@ export function makePlugin(site) {
               }
             },
           },
+          ] : []),
           {
             type: "oauth",
             label: `${site.displayName} 用百智云账号开通`,

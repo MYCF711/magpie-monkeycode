@@ -55,9 +55,9 @@ test("解析：只取点名的 cookie，未过期的才要", () => {
 
 test("解析：过期的扔掉；全过期等于没登录", () => {
   const expired = [{ name: "monkeycode_ai_session", value: "old", expires: "2026-11-01T00:00:00Z" }]
-  assert.equal(cookiesFromJar(JSON.stringify(expired), { names: ["monkeycode_ai_session"], now: NOW }), undefined)
+  assert.equal(cookiesFromJar(JSON.stringify(expired), { names: ["monkeycode_ai_session"], now: NOW, home: "" }), undefined)
   const alive = [{ name: "monkeycode_ai_session", value: "new", expires: "2026-11-10T00:00:00Z" }]
-  assert.equal(cookiesFromJar(JSON.stringify(alive), { names: ["monkeycode_ai_session"], now: NOW }), "monkeycode_ai_session=new")
+  assert.equal(cookiesFromJar(JSON.stringify(alive), { names: ["monkeycode_ai_session"], now: NOW, home: "" }), "monkeycode_ai_session=new")
 })
 
 test("解析：秒级与毫秒级时间戳都按正确量级读", () => {
@@ -68,8 +68,8 @@ test("解析：秒级与毫秒级时间戳都按正确量级读", () => {
     { name: "b", value: "2", expires: millis },
     { name: "c", value: "3", expires: Math.floor(NOW / 1000) - 60 },
   ]
-  assert.equal(cookiesFromJar(JSON.stringify(jar), { names: ["a", "b"], now: NOW }), "a=1; b=2")
-  assert.equal(cookiesFromJar(JSON.stringify(jar), { names: ["c"], now: NOW }), undefined)
+  assert.equal(cookiesFromJar(JSON.stringify(jar), { names: ["a", "b"], now: NOW, home: "" }), "a=1; b=2")
+  assert.equal(cookiesFromJar(JSON.stringify(jar), { names: ["c"], now: NOW, home: "" }), undefined)
 })
 
 test("解析：同名的多域 cookie 取最后一条（客户端会同时存多个子域）", () => {
@@ -79,18 +79,18 @@ test("解析：同名的多域 cookie 取最后一条（客户端会同时存多
     { name: "baizhi_session", value: "sess", domain: "baizhi.cloud" },
   ]
   assert.equal(
-    cookiesFromJar(JSON.stringify(jar), { names: ["sl-session", "baizhi_session"], now: NOW }),
+    cookiesFromJar(JSON.stringify(jar), { names: ["sl-session", "baizhi_session"], now: NOW, home: "" }),
     "sl-session=ai-models; baizhi_session=sess",
   )
 })
 
 test("解析：坏文件 / 空值 / 非数组一律 undefined，不抛错", () => {
   for (const bad of ["", "not json", "{}", "[]", "[{}]", JSON.stringify([{ name: "x", value: "" }])]) {
-    assert.equal(cookiesFromJar(bad, { names: ["x"], now: NOW }), undefined)
+    assert.equal(cookiesFromJar(bad, { names: ["x"], now: NOW, home: "" }), undefined)
   }
   // 也认 `{ cookies: [...] }` 这种包一层的形状
   assert.equal(
-    cookiesFromJar(JSON.stringify({ cookies: [{ name: "x", value: "1" }] }), { names: ["x"], now: NOW }),
+    cookiesFromJar(JSON.stringify({ cookies: [{ name: "x", value: "1" }] }), { names: ["x"], now: NOW, home: "" }),
     "x=1",
   )
 })
@@ -98,12 +98,12 @@ test("解析：坏文件 / 空值 / 非数组一律 undefined，不抛错", () =
 test("读文件：命中返回 cookie 与来源文件；没有文件返回 undefined", () => {
   const box = sandbox({ "monkeycode-cookies.json": [{ name: "monkeycode_ai_session", value: "abc", expires: "2026-11-10T00:00:00Z" }] })
   try {
-    const hit = readDesktopMonkeyCodeSession({ env: { APPDATA: box.root }, now: NOW })
+    const hit = readDesktopMonkeyCodeSession({ env: { APPDATA: box.root }, now: NOW, home: "" })
     assert.ok(hit !== undefined)
     assert.equal(hit.cookie, "monkeycode_ai_session=abc")
     assert.ok(hit.file.endsWith("monkeycode-cookies.json"))
     // 换了根目录就没有了 —— 证明它真的按 env 走，没有硬编码本机路径
-    assert.equal(readDesktopMonkeyCodeSession({ env: { APPDATA: join(box.root, "nope") }, now: NOW }), undefined)
+    assert.equal(readDesktopMonkeyCodeSession({ env: { APPDATA: join(box.root, "nope") }, now: NOW, home: "" }), undefined)
   } finally {
     box.cleanup()
   }
@@ -113,7 +113,7 @@ test("读文件：所需的 cookie 没到齐就不算命中（匿名会话陷阱
   // 只有 sl-session、缺 baizhi_session → 百智云会话不算登录
   const box = sandbox({ "baizhi-cookies.json": [{ name: "sl-session", value: "only-device" }] })
   try {
-    assert.equal(readDesktopBaizhiSession({ env: { APPDATA: box.root }, now: NOW }), undefined)
+    assert.equal(readDesktopBaizhiSession({ env: { APPDATA: box.root }, now: NOW, home: "" }), undefined)
   } finally {
     box.cleanup()
   }
@@ -124,7 +124,7 @@ test("读文件：所需的 cookie 没到齐就不算命中（匿名会话陷阱
     ],
   })
   try {
-    const hit = readDesktopBaizhiSession({ env: { APPDATA: ready.root }, now: NOW })
+    const hit = readDesktopBaizhiSession({ env: { APPDATA: ready.root }, now: NOW, home: "" })
     assert.ok(hit !== undefined)
     assert.equal(hit.cookie, "sl-session=dev; baizhi_session=sess")
   } finally {
@@ -139,7 +139,7 @@ test("读文件：LOCALAPPDATA 里有也算（内嵌 WebView 偶尔只落那儿�
       cookieFile: "monkeycode-cookies.json",
       cookieNames: ["monkeycode_ai_session"],
       env: { LOCALAPPDATA: box.root },
-      now: NOW,
+      now: NOW, home: "",
     })
     assert.equal(hit.cookie, "monkeycode_ai_session=from-local")
   } finally {

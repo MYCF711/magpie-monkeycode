@@ -44,7 +44,12 @@ export function desktopDataDirs({ env = process.env, home = homedir() } = {}) {
   }
   push(env.APPDATA)
   push(env.LOCALAPPDATA)
-  // 非 Windows：客户端把同一套结构放在 ~/.config 或 ~/Library/Application Support。
+  // ⚠ **不许只信环境变量**。magpie 是 GUI 宿主进程，实测在某些启动方式下
+  // `APPDATA` 没被带进子进程的环境 —— 于是明明装过客户端、登录态就在那儿，
+  // 插件却报「本机没有登录态」（2026-11-04 真机）。按 homedir 重新拼一遍兜底。
+  push(join(home, "AppData", "Roaming"))
+  push(join(home, "AppData", "Local"))
+  // 非 Windows：同一套结构放在 ~/.config 或 ~/Library/Application Support。
   push(join(home, ".config"))
   push(join(home, "Library", "Application Support"))
   return [...new Set(dirs)]
@@ -109,10 +114,12 @@ export function cookiesFromJar(text, { names, now = Date.now() } = {}) {
  * @param {NodeJS.ProcessEnv} [options.env]
  * @returns {{ cookie: string, file: string } | undefined}
  */
-export function readDesktopCookie({ cookieFile, cookieNames, appDir = DESKTOP_APP_DIR, env = process.env, now = Date.now() } = {}) {
+export function readDesktopCookie({ cookieFile, cookieNames, appDir = DESKTOP_APP_DIR, env = process.env, home, now = Date.now() } = {}) {
   if (typeof cookieFile !== "string" || cookieFile.length === 0) return undefined
   const names = Array.isArray(cookieNames) ? cookieNames : []
-  const bases = desktopDataDirs({ env })
+  // `home` 必须能一路传到底：单测要用它把「按 homedir 兜底」关掉（否则测试会读到
+  // 开发机上真实的 AppData 登录态，断言全变成「看这台机器装没装客户端」）。
+  const bases = desktopDataDirs(home === undefined ? { env } : { env, home })
   for (const dir of bases) {
     const file = join(dir, cookieFile)
     let text
