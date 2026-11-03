@@ -180,6 +180,12 @@ export async function openControlledBrowser({ url = "about:blank", profileDir, h
     ws.addEventListener("open", resolve, { once: true })
     ws.addEventListener("error", () => reject(new Error("CDP WebSocket 连不上")), { once: true })
   })
+  // 启动参数里的 URL 不一定被采纳（尤其 headless）：连上后显式导航一次，
+  // 免得用户对着 about:blank 不知道该干什么。
+  if (url !== "about:blank") {
+    await cdpSend(ws, 0, "Page.enable").catch(() => {})
+    await cdpSend(ws, -1, "Page.navigate", { url }).catch(() => {})
+  }
   return { ws, close, profileDir: profile, persistent }
 }
 
