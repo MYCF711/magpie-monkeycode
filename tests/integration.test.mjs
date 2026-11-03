@@ -133,6 +133,7 @@ test("百智云端到端：真实 HTTP、只认 x-api-key、目录能拉到", as
   const { port } = server.address()
   const origin = `http://127.0.0.1:${port}`
   try {
+    const { BAIZHI: BAIZHI_FOR_TEST } = await import("../src/baizhi/site.mjs")
     const plugin = await makeBaizhiPlugin({
       ...(await import("../src/baizhi/site.mjs")).BAIZHI,
       baseUrl: `${origin}/api/anthropic/v1`,
@@ -140,8 +141,13 @@ test("百智云端到端：真实 HTTP、只认 x-api-key、目录能拉到", as
     })({ client: {} })
     const auth = { type: "api", key: KEY }
 
+    // provider.models 是纯静态的：不该打远端目录。
     const models = await plugin.provider.models({ models: {} }, { auth })
-    assert.deepEqual(Object.keys(models), ["deepseek-v4-pro"])
+    assert.ok(Object.keys(models).length > 10, "登录后拿到的是内置表")
+    // 远端目录由 credits 的 fetchRemoteModels 单独负责（含 x-api-key）。
+    const { fetchRemoteModels } = await import("../src/baizhi/credits.mjs")
+    const live = await fetchRemoteModels(KEY, { ...BAIZHI_FOR_TEST, modelsUrl: `${origin}/api/anthropic/v1/models` })
+    assert.deepEqual(live.map((m) => m.id), ["deepseek-v4-pro"])
 
     const loader = await plugin.auth.loader(async () => auth)
     const body = JSON.stringify({ model: "deepseek-v4-pro", messages: [], max_tokens: 8, stream: true })

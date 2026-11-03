@@ -105,40 +105,44 @@ test("额度：可用 / 每日 / 充值三个窗口，未配 cookie 给可读错
   assert.equal(noCookie.windows.length, 0)
 })
 
-test("模型目录：远端成功时用远端列表并补已知能力；失败时退回静态表", async () => {
+test("模型目录：provider.models 纯静态、绝不发网络（登录那一刻不许等远端）", async () => {
   const plugin = await makeBaizhiPlugin()({ client: {} })
+  let called = 0
+  const original = globalThis.fetch
+  globalThis.fetch = async () => {
+    called += 1
+    throw new Error("provider.models 不许发网络请求")
+  }
+  try {
+    const models = await plugin.provider.models({ models: {} }, { auth })
+    assert.equal(called, 0, "provider.models 里任何网络请求都会变成「登录后列不出模型」的失败面")
+    assert.equal(Object.keys(models).length, BAIZHI_KNOWN_MODELS.length)
+    assert.equal(models["deepseek-v4-pro"].limit.context, 1_048_576, "已知能力从本地表补")
+    assert.equal(models["glm-5"].limit.context, 0, "未知窗口不编")
+  } finally {
+    globalThis.fetch = original
+  }
+})
 
-  await withFetch(
-    (url) => {
-      if (url === BAIZHI.modelsUrl) {
-        return Response.json({
-          data: [
-            { id: "deepseek-v4-pro", type: "model", display_name: "DeepSeek V4 Pro" },
-            { id: "brand-new-model", type: "model", display_name: "Brand New" },
-          ],
-        })
-      }
-      throw new Error(`unexpected ${url}`)
-    },
-    async (calls) => {
-      const models = await plugin.provider.models({ models: {} }, { auth })
-      assert.deepEqual(Object.keys(models).sort(), ["brand-new-model", "deepseek-v4-pro"])
-      assert.equal(models["deepseek-v4-pro"].limit.context, 1_048_576, "已知能力从本地表补")
-      assert.equal(models["deepseek-v4-pro"].capabilities.input.image, false)
-      // 未知模型：不编窗口、不编能力，只给 text。
-      assert.equal(models["brand-new-model"].limit.context, 0)
-      assert.equal(models["brand-new-model"].capabilities.input.image, false)
-      assert.equal(calls[0].init.headers["x-api-key"], KEY)
-    },
-  )
-
-  await withFetch(
-    () => new Response("boom", { status: 500 }),
-    async () => {
-      const models = await plugin.provider.models({ models: {} }, { auth })
-      assert.equal(Object.keys(models).length, BAIZHI_KNOWN_MODELS.length, "远端失败必须退回静态表，不能返回空表")
-    },
-  )
+test("远端目录解析：能读 display_name，带斜杠的 id 由 modelEntry 压平", async () => {
+  const { fetchRemoteModels } = await import("../src/baizhi/credits.mjs")
+  const { _internal } = await import("../src/baizhi/runtime.mjs")
+  const live = await fetchRemoteModels("sk-test", BAIZHI, {
+    fetchImpl: async () => Response.json({
+      data: [
+        { id: "deepseek/deepseek-v4-pro", display_name: "嵌套命名空间" },
+        { id: "glm-5.1", display_name: "GLM-5.1" },
+        { id: "" },
+      ],
+    }),
+  })
+  assert.equal(live.length, 2, "空 id 要被丢掉")
+  const nested = _internal.modelEntry(BAIZHI, live[0].id, live[0].name)
+  assert.equal(nested.id, "deepseek-deepseek-v4-pro", "斜杠压平，否则 magpie 会拆出幽灵供应商")
+  assert.equal(nested.apiId, "deepseek/deepseek-v4-pro")
+  assert.equal(nested.api.id, "deepseek/deepseek-v4-pro")
+  const plain = _internal.modelEntry(BAIZHI, live[1].id, live[1].name)
+  assert.equal(plain.id, "glm-5.1")
 })
 
 test("没有签到：auth.checkin 不存在", async () => {
@@ -162,33 +166,4 @@ test("已知能力表：只有 4 条 deepseek 声明窗口，图片只给明确�
   assert.ok(deepseek.every((model) => model.id.startsWith("deepseek-")))
   assert.equal(knownBaizhiModel("deepseek-v4-flash-vision-exp").image, true)
   assert.equal(knownBaizhiModel("glm-5").image, undefined, "不知道就不写，不是写 false")
-})
-
-test("远端目录里带斜杠的 id 会被压平，上游 id 放 apiId（否则 magpie 拆出幽灵供应商）", async () => {
-  const plugin = await makeBaizhiPlugin()({ client: {} })
-  await withFetch(
-    (url) => {
-      if (url === BAIZHI.modelsUrl) {
-        return Response.json({
-          data: [
-            { id: "deepseek/deepseek-v4-pro", display_name: "嵌套命名空间的模型" },
-            { id: "glm-5.1", display_name: "GLM-5.1" },
-          ],
-        })
-      }
-      throw new Error(`unexpected ${url}`)
-    },
-    async () => {
-      const models = await plugin.provider.models({ models: {} }, { auth })
-      for (const key of Object.keys(models)) {
-        assert.ok(!key.includes("/"), `${key} 的 id 含斜杠`)
-      }
-      const nested = models["deepseek-deepseek-v4-pro"]
-      assert.ok(nested, "带斜杠的 id 必须被压平")
-      assert.equal(nested.apiId, "deepseek/deepseek-v4-pro", "上游真实 id 由 apiId 带走")
-      assert.equal(nested.api.id, "deepseek/deepseek-v4-pro", "请求体里的 model 用上游 id")
-      // 干净的 id 不写 apiId。
-      assert.equal(models["glm-5.1"].apiId, undefined)
-    },
-  )
 })

@@ -18,7 +18,7 @@ import { findBrowser } from "../browser-login.mjs"
 import { openInSystemBrowser } from "../system-open.mjs"
 import { BROWSER_LOGIN_TIMEOUT_MS, openControlledBrowser, profileDirFor, startBrowserLogin } from "../session-login.mjs"
 import {
-  exchangeSessionForKey, fetchProfile, fetchRemoteModels, fetchUsage, fetchWallet,
+  exchangeSessionForKey, fetchProfile, fetchUsage, fetchWallet,
 } from "./credits.mjs"
 import { ANTHROPIC_VERSION, BAIZHI, BAIZHI_MAX_OUTPUT_TOKENS, knownBaizhiModel } from "./site.mjs"
 
@@ -255,26 +255,20 @@ export function makeBaizhiPlugin(site = BAIZHI) {
       // ── ⑦ 每账号的模型目录 ─────────────────────────────────────────
       provider: {
         id: site.id,
-        async models(provider, { auth } = {}) {
+        /**
+         * 模型目录：**纯静态、不发网络**。
+         *
+         * ⚠ 这里刻意不调远端目录（2026-11-04 真机事故）：magpie 在**登录刚完成**
+         * 的那一刻就会调用这个钩子，而它对这次调用有时间上限。只要这里做一次网络
+         * 请求，就多一个「远端慢/挂住 → 插件被判定列不出模型 → 卡片报『已登录，但
+         * magpie 无法列出它』」的失败面。守护对象的正确性优先于目录新鲜度。
+         *
+         * `src/baizhi/credits.mjs` 的 `fetchRemoteModels` 留着：将来若要做「后台刷新
+         * 缓存、下次启动用缓存」，它仍然可用 —— 但**不能**放进这条同步路径。
+         */
+        async models(provider) {
           const base = provider ?? {}
-          const fallback = { ...staticModels(site), ...(base.models ?? {}) }
-          const credential = credentialOf(auth)
-          if (credential === undefined) return fallback
-          let live
-          try {
-            // 5 秒：远端的目录接口不该让登录后的第一屏等 10 秒，等不到就用静态表。
-            live = await fetchRemoteModels(credential.access_token, site, { timeoutMs: 5_000 })
-          } catch {
-            // 远端失败 → 退回内置表（不返回空表，那会让用户的模型列表整片消失）。
-            return fallback
-          }
-          const out = {}
-          for (const model of live) {
-            const entry = modelEntry(site, model.id, model.name)
-            if (entry.id.length === 0) continue
-            out[entry.id] = entry
-          }
-          return Object.keys(out).length > 0 ? out : fallback
+          return { ...staticModels(site), ...(base.models ?? {}) }
         },
       },
 
