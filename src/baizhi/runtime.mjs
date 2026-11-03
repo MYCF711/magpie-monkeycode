@@ -230,6 +230,7 @@ async function openKeyPage(keysUrl) {
  * —— 用户以为是自己没扫上（2026-11-04 真机：「观猹注册的账号扫微信登不进来」）。
  */
 const AGREE_PROTOCOL_JS = `(() => {
+  // 1) 勾掉「阅读并同意用户协议、隐私政策」（百智云不勾就不放行扫码）
   const boxes = [...document.querySelectorAll('input[type=checkbox]')].filter((el) => !el.checked);
   for (const box of boxes) box.click();
   if (boxes.length === 0) {
@@ -237,7 +238,27 @@ const AGREE_PROTOCOL_JS = `(() => {
       .find((el) => el.getAttribute('aria-checked') !== 'true' && !el.classList.contains('checked'));
     if (fake) fake.click();
   }
-  return boxes.length;
+
+  // 2) 观猹（watcha.cn）授权页：点「继续」才把授权交回百智云。
+  //    用户在百智云点「其他登录方式 → 微信/观猹图标」会跳到
+  //    watcha.cn/login?client_id=…&redirect_uri=https://baizhi.cloud/api/v1/oauth/…
+  //    那一页上只有一个绿色「继续」—— 不点就永远回不到 baizhi.cloud，
+  //    插件等 sl-session 等到超时（真机：观猹账号登录拿不到 cookie）。
+  const host = location.hostname;
+  if (/watcha\.cn$/.test(host)) {
+    const go = [...document.querySelectorAll('button,a,[role=button]')]
+      .find((el) => ((el.textContent || '') + '').trim() === '继续');
+    if (go) {
+      go.click();
+      return 'watcha-continue';
+    }
+  }
+
+  // 3) 百智云自己的 OAuth 授权确认页（若有）
+  const auth = [...document.querySelectorAll('button,a,[role=button]')]
+    .find((el) => /确认授权|同意授权|允许授权/.test(((el.textContent || '') + '').trim()));
+  if (auth) auth.click();
+  return 'ok';
 })()`
 
 /** 手动粘贴的兜底说明：受控窗口起不来时，用户还能自己把 cookie 交进来。 */
@@ -364,9 +385,10 @@ export function makeBaizhiPlugin(site = BAIZHI) {
                 url: site.loginUrl,
                 opened: true,
                 method: "auto",
-                instructions: "在打开的窗口里用**微信扫码**登录百智云控制台（观猹/MonkeyCode 的账号扫码即可，用户协议插件会替你勾好）；登录完成后本页会自动继续。"
-                  + "\n⚠ 百智云没有自助注册入口：没有账号的话，先去 MonkeyCode 注册（观猹账号），"
-                  + "\n   它会一并开通百智云身份，之后用同一个手机号回来登录这里。",
+                instructions: "在打开的窗口里登录百智云。要用**观猹账号**的话："
+                  + "\n· 点页面下方「其他登录方式」里那个**微信图标** → 跳到 watcha.cn 的「观猹账号登录」"
+                  + "\n· 点「继续」授权（插件会自动点）→ 回到百智云，cookie 与 sk- 密钥自动取"
+                  + "\n⚠ 百智云没有自助注册入口：没有账号就先在观猹注册（watcha.cn），它是这类账号的身份源。",
                 async callback() {
                   try {
                     const { cookie } = await flow.wait()
