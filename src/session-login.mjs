@@ -283,6 +283,15 @@ export async function startBrowserLogin({
   signal,
   profileDir,
   browser = findBrowser(),
+  /**
+   * 可选：等待期间每秒跑一次的小动作（例如替用户勾掉「我已同意用户协议」）。
+   *
+   * 为什么要这个钩子：有的平台把「同意协议」做成**必须先勾**，不勾时扫码/登录
+   * 会在背后静默失败 —— 用户以为是自己没扫上，其实是被那个复选框挡住了。
+   *
+   * @param {string} onPoll 一段 JS 表达式，每秒在主页面执行一次
+   */
+  onPoll,
 }) {
   const names = Array.isArray(cookieNames) && cookieNames.length > 0 ? cookieNames : [cookieName]
   const handle = await openControlledBrowser({ url, profileDir, browser })
@@ -293,10 +302,14 @@ export async function startBrowserLogin({
     close: handle.close,
     async wait() {
       const deadline = Date.now() + timeoutMs
+      let pollId = 500
       try {
         while (Date.now() < deadline) {
           if (signal?.aborted) throw new Error("登录已取消")
           if (closed()) throw new Error("受控浏览器窗口被关掉了（或被系统拦下没能启动）")
+          if (typeof onPoll === "string" && onPoll.length > 0) {
+            await cdpSend(handle.ws, pollId++, "Runtime.evaluate", { expression: onPoll, returnByValue: true }).catch(() => {})
+          }
           const cookies = await cookiesOn(handle.ws).catch(() => [])
           const cookie = sessionCookieOf(cookies, names, cookieDomains)
           if (cookie !== undefined && await accept(cookie)) return { cookie, browser: browser.name }

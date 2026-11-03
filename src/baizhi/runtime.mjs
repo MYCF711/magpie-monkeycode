@@ -189,6 +189,8 @@ async function startBaizhiBrowserLogin(site, { signal, browser } = {}) {
     cookieNames: [...CONSOLE_COOKIES],
     cookieDomains: [...CONSOLE_DOMAINS],
     timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
+    // 登录页默认是微信扫码，但协议复选框不勾会静默失败 —— 替用户勾掉。
+    onPoll: AGREE_PROTOCOL_JS,
     signal,
     // 两枚到齐就算「读到登录态」；能不能换出 Key 由 finishSignIn 判。
     async accept() {
@@ -219,6 +221,24 @@ async function openKeyPage(keysUrl) {
     openInSystemBrowser(keysUrl)
   }
 }
+
+
+/**
+ * 等待期间每秒跑一次：勾掉「阅读并同意用户协议、隐私政策」。
+ *
+ * 百智云的登录页是**微信扫码**默认，但那个协议复选框不勾，扫码会在背后静默失败
+ * —— 用户以为是自己没扫上（2026-11-04 真机：「观猹注册的账号扫微信登不进来」）。
+ */
+const AGREE_PROTOCOL_JS = `(() => {
+  const boxes = [...document.querySelectorAll('input[type=checkbox]')].filter((el) => !el.checked);
+  for (const box of boxes) box.click();
+  if (boxes.length === 0) {
+    const fake = [...document.querySelectorAll('[role=checkbox], [class*=checkbox], [class*=agree]')]
+      .find((el) => el.getAttribute('aria-checked') !== 'true' && !el.classList.contains('checked'));
+    if (fake) fake.click();
+  }
+  return boxes.length;
+})()`
 
 /** 手动粘贴的兜底说明：受控窗口起不来时，用户还能自己把 cookie 交进来。 */
 function manualCookieHint(site, reason) {
@@ -344,7 +364,7 @@ export function makeBaizhiPlugin(site = BAIZHI) {
                 url: site.loginUrl,
                 opened: true,
                 method: "auto",
-                instructions: "在打开的窗口里登录百智云控制台；登录完成后本页会自动继续（账号下需要有可用的 sk- 密钥）。"
+                instructions: "在打开的窗口里用**微信扫码**登录百智云控制台（观猹/MonkeyCode 的账号扫码即可，用户协议插件会替你勾好）；登录完成后本页会自动继续。"
                   + "\n⚠ 百智云没有自助注册入口：没有账号的话，先去 MonkeyCode 注册（观猹账号），"
                   + "\n   它会一并开通百智云身份，之后用同一个手机号回来登录这里。",
                 async callback() {
@@ -395,6 +415,7 @@ export function makeBaizhiPlugin(site = BAIZHI) {
                     cookieNames: [...CONSOLE_COOKIES],
                     cookieDomains: [...CONSOLE_DOMAINS],
                     timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
+                    onPoll: AGREE_PROTOCOL_JS,
                     async accept() {
                       return true
                     },
