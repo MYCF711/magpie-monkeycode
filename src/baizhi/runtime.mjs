@@ -24,15 +24,32 @@ import { ANTHROPIC_VERSION, BAIZHI, BAIZHI_MAX_OUTPUT_TOKENS, knownBaizhiModel }
 
 const SDK = "@ai-sdk/anthropic"
 
+/**
+ * magpie 侧的模型 id 安全化。
+ *
+ * magpie 把 `<a>/<b>` 读成「provider a 的模型 b」—— 远端目录里只要有一个 id 带
+ * 斜杠，网关里就会凭空长出几个不存在的供应商，卡片提示「已登录，但 magpie 无法
+ * 列出它」（2026-11-04 真机就是这个现象）。上游真实 id 交给 `apiId`。
+ */
+function safeModelId(raw) {
+  const id = String(raw ?? "").trim()
+  if (id.length === 0) return ""
+  return id.replace(/[/\\]/g, "-")
+}
+
 /** 把一条模型编译成 magpie 的形状；能力只从本地已知表补，未知就不写。 */
-function modelEntry(site, id, name) {
-  const known = knownBaizhiModel(id)
+function modelEntry(site, rawId, name) {
+  const apiId = String(rawId ?? "").trim()
+  const id = safeModelId(apiId)
+  const known = knownBaizhiModel(apiId)
   const context = known?.context
   const image = known?.image === true
   return {
     id,
+    // 上游 id 与 magpie 的 id 不同时用 apiId 带上（发请求时用它）。
+    ...(apiId === id ? {} : { apiId }),
     name: name ?? known?.name ?? id,
-    api: { id, url: site.baseUrl, npm: SDK },
+    api: { id: apiId, url: site.baseUrl, npm: SDK },
     status: "active",
     cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
     // context 为 0 = 厂商没有下发窗口，不编造（agent 据此决定何时压缩）。
@@ -239,18 +256,24 @@ export function makeBaizhiPlugin(site = BAIZHI) {
       provider: {
         id: site.id,
         async models(provider, { auth } = {}) {
-          const fallback = { ...staticModels(site), ...(provider.models ?? {}) }
+          const base = provider ?? {}
+          const fallback = { ...staticModels(site), ...(base.models ?? {}) }
           const credential = credentialOf(auth)
           if (credential === undefined) return fallback
           let live
           try {
-            live = await fetchRemoteModels(credential.access_token, site)
+            // 5 秒：远端的目录接口不该让登录后的第一屏等 10 秒，等不到就用静态表。
+            live = await fetchRemoteModels(credential.access_token, site, { timeoutMs: 5_000 })
           } catch {
-            // 远端失败 → 退回上一次的列表（不返回空表，那会让用户的模型列表整片消失）。
+            // 远端失败 → 退回内置表（不返回空表，那会让用户的模型列表整片消失）。
             return fallback
           }
           const out = {}
-          for (const model of live) out[model.id] = modelEntry(site, model.id, model.name)
+          for (const model of live) {
+            const entry = modelEntry(site, model.id, model.name)
+            if (entry.id.length === 0) continue
+            out[entry.id] = entry
+          }
           return Object.keys(out).length > 0 ? out : fallback
         },
       },

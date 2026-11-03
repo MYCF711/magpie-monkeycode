@@ -163,3 +163,32 @@ test("已知能力表：只有 4 条 deepseek 声明窗口，图片只给明确�
   assert.equal(knownBaizhiModel("deepseek-v4-flash-vision-exp").image, true)
   assert.equal(knownBaizhiModel("glm-5").image, undefined, "不知道就不写，不是写 false")
 })
+
+test("远端目录里带斜杠的 id 会被压平，上游 id 放 apiId（否则 magpie 拆出幽灵供应商）", async () => {
+  const plugin = await makeBaizhiPlugin()({ client: {} })
+  await withFetch(
+    (url) => {
+      if (url === BAIZHI.modelsUrl) {
+        return Response.json({
+          data: [
+            { id: "deepseek/deepseek-v4-pro", display_name: "嵌套命名空间的模型" },
+            { id: "glm-5.1", display_name: "GLM-5.1" },
+          ],
+        })
+      }
+      throw new Error(`unexpected ${url}`)
+    },
+    async () => {
+      const models = await plugin.provider.models({ models: {} }, { auth })
+      for (const key of Object.keys(models)) {
+        assert.ok(!key.includes("/"), `${key} 的 id 含斜杠`)
+      }
+      const nested = models["deepseek-deepseek-v4-pro"]
+      assert.ok(nested, "带斜杠的 id 必须被压平")
+      assert.equal(nested.apiId, "deepseek/deepseek-v4-pro", "上游真实 id 由 apiId 带走")
+      assert.equal(nested.api.id, "deepseek/deepseek-v4-pro", "请求体里的 model 用上游 id")
+      // 干净的 id 不写 apiId。
+      assert.equal(models["glm-5.1"].apiId, undefined)
+    },
+  )
+})
