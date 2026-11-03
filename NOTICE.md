@@ -38,3 +38,15 @@
   - `tests/mount.test.mjs`：入口唯一函数导出 / 九钩子 / config / loader / usage 的挂载测试结构（`tests/mount.test.mjs`）
 
 以上项目的版权归各自作者所有，按 MIT 许可使用。本项目自身同样以 MIT 许可发布，完整许可正文见 `LICENSE`。
+
+## MonkeyCode 协议取证
+
+- 仓库：https://github.com/iJetLi/dsh-providers-hub
+- 许可：MIT
+- 版权：Copyright (c) 2026 iJetLi / dsh-providers-hub contributors
+- 吸收内容（本项目按 magpie 钩子重写，未复制其 cordis 运行时结构）：
+  - `src/monkeycode-product.ts`：两个站点的网关与平台地址、接口路径、内置模型快照
+  - `src/monkeycode.ts`：`X-OhMyAgent-Signature` 的签名算法、被签 prompt 的取值优先级、失败分类
+  - `src/monkeycode-credits.ts`：网页会话换网关凭据的接口、钱包 / 订阅 / 签到接口、PoW 验证题算法（`prng` / `solveOne`）
+  - `src/monkeycode-browser-login.mjs`：受控浏览器轮询会话 cookie、401 继续等用户登录的判据
+- 协议说明另见上游：[chaitin/MonkeyCode](https://github.com/chaitin/MonkeyCode)（AGPL-3.0，与本插件无隶属关系）
