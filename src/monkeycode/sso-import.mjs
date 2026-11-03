@@ -36,7 +36,7 @@ import { tmpdir } from "node:os"
 
 import { findBrowser } from "../browser-login.mjs"
 import { exchangeSessionForKey, fetchProfile } from "./credits.mjs"
-import { refreshCatalog } from "./catalog.mjs"
+import { warmCatalog } from "./catalog.mjs"
 import { parseCredential } from "../credential.mjs"
 
 /** magpie 的账号库位置（Windows / macOS / Linux 同一套约定）。 */
@@ -272,10 +272,8 @@ export async function signInWithBaizhiSession(baizhiCookie, site, { fetchImpl = 
     const profile = await fetchProfile(cookieHeader, site, { fetchImpl, timeoutMs: 30_000 })
     // 顺手把平台目录拉一次落盘，并探测「这个号到底能用哪些」：
     // 模型 id 是平台下发的 UUID（内置快照早对不上），而上架 ≠ 有权限。
-    await refreshCatalog(cookieHeader, site, {
-      fetchImpl,
-      credential: { access_token: issued.apiKey, signing_secret: issued.signingSecret, session_cookie: cookieHeader },
-    }).catch(() => {})
+    // 登录成功就落盘目录（不探测：平台清单本身就是这个账号能调什么）。
+    await warmCatalog(cookieHeader, site, { fetchImpl }).catch(() => {})
     return {
       credential: {
         access_token: issued.apiKey,

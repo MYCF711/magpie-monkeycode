@@ -294,14 +294,42 @@ export async function probeCatalog(credential, site, models, { concurrency = 4, 
 
 /**
  * 拉一次并落盘（后台用）。永不抛错 —— 目录刷新失败不该打断任何用户操作。
+ *
+ * ⚠ **默认不探测**（`probe !== true`）：平台的 `GET /api/v1/users/models` 返回的
+ * 本来就是「这个账号当前能调什么」（按权限 / 订阅过滤过的清单，2026-11-04 国际站
+ * 实测：全站 45 条、这个账号只有 4 条）。再用 `probeModel` 二次筛一遍有两个坏处：
+ *
+ * 1. **会误杀**：探测发的是 `max_tokens: 1` 的最小请求，慢一点 / 被限流 / 上游对
+ *    这个形状挑刺，都会让一条本来能用的模型被标成 `usable: false` 而不显示；
+ * 2. **每刷一次目录就打 N 个真请求**，白白消耗额度。
+ *
+ * 所以可用性以**平台清单**为准。探测保留成显式开关（`{ probe: true, credential }`），
+ * 只在要复核「平台说了能调、实际 403」时才用。
  */
 export async function refreshCatalog(cookie, site, options = {}) {
   const result = await fetchCatalog(cookie, site, options)
   if (!result.ok) return false
-  // 有网关凭据就顺手探一遍可用性：目录说的是「上架了什么」，
-  // 这里才回答「你这个号能用什么」。
-  const models = options.credential === undefined
-    ? result.models
-    : await probeCatalog(options.credential, site, result.models, options)
+  const models = options.probe === true && options.credential !== undefined
+    ? await probeCatalog(options.credential, site, result.models, options)
+    : result.models
   return writeCatalog(site.id, models)
+}
+
+/**
+ * 登录成功的那一刻就把目录落盘（调用方 `await`）。
+ *
+ * 为什么必须在这一刻：magpie 紧接着会调 `provider.models`，而那里**只读缓存**
+ * （在钩子里发网络请求就会变成「已登录但 magpie 无法列出它」，见本文件顶部）。
+ * 缓存没有内容时，`configModels` 只能退回内置快照 —— 用户看到的是一张跟自己
+ * 账号无关的通用表（2026-11-04 用户反馈的「basic / pro / ultra / 积分怎么这么多」）。
+ *
+ * 失败**不阻塞登录**：拉不到就退回内置快照，但要说得出原因。
+ *
+ * @returns {Promise<{ ok: boolean, count?: number, error?: string }>}
+ */
+export async function warmCatalog(cookie, site, { fetchImpl = fetch, timeoutMs = 20_000 } = {}) {
+  const result = await fetchCatalog(cookie, site, { fetchImpl, timeoutMs })
+  if (!result.ok) return { ok: false, error: result.error }
+  const written = writeCatalog(site.id, result.models)
+  return written ? { ok: true, count: result.models.length } : { ok: false, error: "目录缓存写不进去" }
 }

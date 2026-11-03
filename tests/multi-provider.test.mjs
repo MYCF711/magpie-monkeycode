@@ -49,9 +49,19 @@ test("三个插件各自只注册自己的 provider", async () => {
   assert.equal(cfg.provider.monkeycode.api, "https://proxy.monkeycode-ai.com/v1")
   assert.equal(cfg.provider.monkeycodeintl.api, "https://proxy.monkeycode-ai.net/v1")
   assert.equal(cfg.provider.baizhi.api, "https://ai-models.app.baizhi.cloud/api/anthropic/v1")
-  // 模型数取决于「平台目录缓存有没有落盘」：内置快照 9 条是兜底，
-  // 登录后拉到的真实目录（21 条）优先。这里只要求非空、且不写死数字。
-  assert.ok(Object.keys(cfg.provider.monkeycode.models).length >= 9)
+  // 模型数取决于「平台目录缓存有没有落盘」：内置快照 4 条是兜底，
+  // 登录后拉到的是**这个账号的**真实目录（平台按权限给，国际站实测 4 条）优先。
+  // 这里只要求非空、且不写死具体数字。
+  assert.ok(Object.keys(cfg.provider.monkeycode.models).length >= 4)
+  // 兜底**不许带档位前缀**：basic / pro / ultra 三档各一条会让账号看到自己调不了的
+  // 模型（用户原话：「basic 额度 pro 额度 ultra 额度还有积分计费，怎么这么多」）。
+  for (const id of Object.keys(cfg.provider.monkeycode.models)) {
+    assert.equal(
+      /^monkeycode-(basic|pro|ultra)-/.test(id),
+      false,
+      `内置快照不该列档位条目：${id}`,
+    )
+  }
   assert.equal(Object.keys(cfg.provider.baizhi.models).length, 15)
 })
 

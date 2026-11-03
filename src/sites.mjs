@@ -27,20 +27,24 @@ const DEEPSEEK_CONTEXT = 1_048_576
 /**
  * [magpie 的 id, 显示名, 上下文窗口（undefined = 不声明）, 上游 id（与 id 不同时才写）]
  *
+ * ⚠ 这里只是**兜底快照**。真正该列的是「这个账号当前能调什么」，来源是登录后
+ * `GET /api/v1/users/models` 的返回值（平台按账号权限 / 订阅给清单，2026-11-04
+ * 国际站实测只回 4 条，而不是全站的 45 条）。快照只在「还没登录 / 目录一次都
+ * 没拉到」时顶上，所以**刻意不带档位前缀**：
+ *
+ * - 带 `monkeycode-basic/` `monkeycode-pro/` `monkeycode-ultra/` 的是**同一个模型
+ *   在不同额度池**里的各一条；把三档全写进兜底，basic 账号会看到一堆自己调不了的
+ *   ultra 条目（2026-11-04 用户反馈：「basic 额度 pro 额度 ultra 额度还有积分计费，
+ *   怎么这么多，直接捕获账号当前可用的模型就行了」）；
+ * - 不带前缀的直接扣积分，是任何账号都能走的兜底口径。
+ *
  * ⚠ **magpie 的模型 id 里不能出现 `/`**（2026-11-03 真机踩到）：magpie 把
  * `<a>/<b>` 读成「provider a 的模型 b」，于是 `monkeycode-basic/deepseek-flash`
  * 这类上游 id 会凭空长出 `monkeycode-basic` / `monkeycode-pro` / `monkeycode-ultra`
  * 三个不存在的供应商，卡片的模型列表整个对不上（界面提示「已登录，但 magpie
- * 无法列出它」）。
- *
- * 所以 magpie 里用连字符压平的 id，上游真实 id 交给 `apiId` —— 发请求时用它。
+ * 无法列出它」）。所以 magpie 里用连字符压平的 id，上游真实 id 交给 `apiId`。
  */
 const MODELS = [
-  ["monkeycode-basic-deepseek-flash", "DeepSeek Flash（basic 额度）", DEEPSEEK_CONTEXT, "monkeycode-basic/deepseek-flash"],
-  ["monkeycode-basic-deepseek-v4-flash", "DeepSeek V4 Flash（basic 额度）", DEEPSEEK_CONTEXT, "monkeycode-basic/deepseek-v4-flash"],
-  ["monkeycode-pro-deepseek-flash", "DeepSeek Flash（pro 额度）", DEEPSEEK_CONTEXT, "monkeycode-pro/deepseek-flash"],
-  ["monkeycode-pro-deepseek-v4-pro", "DeepSeek V4 Pro（pro 额度）", DEEPSEEK_CONTEXT, "monkeycode-pro/deepseek-v4-pro"],
-  ["monkeycode-ultra-deepseek-v4-pro", "DeepSeek V4 Pro（ultra 额度）", DEEPSEEK_CONTEXT, "monkeycode-ultra/deepseek-v4-pro"],
   ["deepseek-flash", "DeepSeek Flash（按积分计费）", DEEPSEEK_CONTEXT],
   ["deepseek-v4-flash", "DeepSeek V4 Flash（按积分计费）", DEEPSEEK_CONTEXT],
   ["deepseek-v4-pro", "DeepSeek V4 Pro（按积分计费）", DEEPSEEK_CONTEXT],
