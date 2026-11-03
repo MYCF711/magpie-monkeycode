@@ -26,7 +26,7 @@ import { profileDirFor, readCookiesSilently, startBrowserLogin } from "../sessio
 import { signInWithBaizhiSession } from "./sso-import.mjs"
 import { readDesktopMonkeyCodeSession } from "./desktop-session.mjs"
 import { loginWithPassword } from "./password-login.mjs"
-import { KNOWN_CONTEXT, isStale, prettyModelName, readCatalog, refreshCatalog } from "./catalog.mjs"
+import { KNOWN_CONTEXT, isStale, prettyModelName, readCatalog, refreshCatalog, warmCatalog } from "./catalog.mjs"
 import { AGREE_PROTOCOL_JS } from "../baizhi/runtime.mjs"
 
 /**
@@ -90,13 +90,10 @@ function configModels(site) {
   const cached = readCatalog(site.id)
   if (cached !== undefined && cached.models.length > 0) {
     const out = {}
-    // 只列**这个账号真的能用**的：探测过的条目带 usable，未探测（老缓存）视为可用。
-    const visible = cached.models.filter((model) => model.usable !== false)
-    if (visible.length === 0) {
-      // 探测过但一条都不行 —— 别列 21 个点哪个都 403 的假选项。
-      return {}
-    }
-    for (const model of visible) {
+    // 平台目录给的就是「这个账号能调什么」（按权限 / 订阅过滤过的），原样列出。
+    // 不再拿 `usable` 二次筛选：那是 `max_tokens: 1` 的探测结论，会误杀慢的 /
+    // 被限流的模型，也会让账号看起来「模型怎么这么少」。
+    for (const model of cached.models) {
       out[model.id] = {
         id: model.id,
         // 显示名在读取时算：老缓存里没有 displayName 也能立刻变好看，不用重拉目录。
@@ -271,6 +268,10 @@ async function signInWithBrowser(site, { fetchImpl, signal } = {}) {
   const cookie = credential.session_cookie
   const profile = await fetchProfile(cookie, site, { fetchImpl })
   const nickname = profile?.nickname
+  // 登录成功的**这一刻**就把「这个账号能调什么」落盘：magpie 紧接着会调
+  // `provider.models`，而那里只读缓存（钩子里发网络请求就会变成「已登录但
+  // 无法列出它」）。失败不阻塞登录 —— 拉不到就退回内置快照。
+  await warmCatalog(cookie, site, { fetchImpl }).catch(() => {})
   return signInSuccess({
     // MonkeyCode 的凭据是「一次性签发的静态材料」，没有 refresh_token ——
     // 整份 JSON 进 access；refresh 由 signInSuccess 填同一份（那一格是
@@ -382,6 +383,7 @@ export function makePlugin(site) {
                     if (!issued.ok) {
                       return { type: "failed", error: `登录成功，但换取网关凭据失败（${issued.error}）` }
                     }
+                    await warmCatalog(session.cookie, site).catch(() => {})
                     const profile = await fetchProfile(session.cookie, site)
                     return signInSuccess({
                       access: JSON.stringify({
@@ -461,6 +463,7 @@ export function makePlugin(site) {
                           + "桌面版里的登录可能已经过期 —— 重新打开桌面版登录一次即可。",
                       }
                     }
+                    await warmCatalog(desk.cookie, site).catch(() => {})
                     const profile = await fetchProfile(desk.cookie, site)
                     return signInSuccess({
                       access: JSON.stringify({
@@ -701,20 +704,11 @@ export function makePlugin(site) {
           const auth = await getAuth()
           const credential = credentialOf(auth)
           if (credential === undefined) return { error: "未登录", windows: [] }
-          // 平台目录里一条能用的都没有 —— 这个号在平台侧就是空的（sub 没开/没进团队）。
-          // 卡片上直说原因，比让用户去猜「为什么模型列表是空的」强。
-          const catalog = readCatalog(site.id)
-          if (catalog !== undefined && catalog.models.length > 0 && catalog.models.every((model) => model.usable === false)) {
-            return {
-              error: `MonkeyCode 平台显示这个账号没有任何可用模型（${catalog.models.length} 条全部 403）`
-                + " —— 去平台开通额度 / 加入团队后再点重试",
-              windows: [],
-            }
-          }
           // 目录过期就后台刷一次（不 await：额度卡片的响应不能被目录拖慢）。
+          // **不带凭据、不探测** —— 平台清单本身就是「这个账号能调什么」，
+          // 再拿 max_tokens:1 的探测筛一遍只会误杀能用的模型（见 catalog.mjs）。
           if (isStale(readCatalog(site.id)) && credential.session_cookie !== undefined) {
-            // 带上网关凭据：刷新时顺带探测「这个号到底能用哪些模型」。
-            refreshCatalog(credential.session_cookie, site, { credential }).catch(() => {})
+            refreshCatalog(credential.session_cookie, site).catch(() => {})
           }
           const key = credential.user_id ?? credential.access_token
           try {
