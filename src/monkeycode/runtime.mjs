@@ -20,6 +20,8 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 
 import { SITES } from "../sites.mjs"
+// 出站 UA 的唯一来源（所有打上游的请求共用这一条），见 src/platform-http.mjs 的注释。
+import { UA } from "../platform-http.mjs"
 import { browserLogin, BROWSER_LOGIN_TIMEOUT_MS } from "./browser-login.mjs"
 import { profileDirFor, readCookiesSilently, startBrowserLogin } from "../session-login.mjs"
 
@@ -674,7 +676,10 @@ export function makePlugin(site) {
               const headers = new Headers(init?.headers ?? request?.headers ?? {})
               // 这几个必须由我们决定：SDK 会塞 x-api-key / authorization，
               // content-length 在重写 body 后必然过期。
-              for (const name of ["authorization", "x-api-key", "content-length", "host"]) headers.delete(name)
+              // `user-agent` 同样必须由我们决定：宿主给插件的是 `magpie/<version>`，
+              // 原样透传 = 上游网关按 `<产品名>/<版本>` 识别成第三方客户端 ⇒ 403 TM.00000001。
+              for (const name of ["authorization", "x-api-key", "content-length", "host", "user-agent"]) headers.delete(name)
+              headers.set("user-agent", UA)
 
               let body = init?.body
               // ⚠ 用 clone() 读文本，绝不能直接消费原 body 流。

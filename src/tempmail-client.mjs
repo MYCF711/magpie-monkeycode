@@ -13,6 +13,10 @@
 const BASE = "https://api.internal.temp-mail.io/api"
 const DOMAIN = "yzcalo.com"
 
+// 出站 UA：不写就透传宿主的 `magpie/<version>`。这是个公开站点，用浏览器形态最稳，
+// 与全仓库其余出站点共用同一条常量（见 src/platform-http.mjs）。
+import { UA } from "./platform-http.mjs"
+
 function nameOf() {
   return "mk" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
 }
@@ -24,7 +28,7 @@ function nameOf() {
 export async function createTempMailbox({ base = BASE, domain = DOMAIN, name = nameOf() } = {}) {
   const res = await fetch(`${base}/v3/email/new`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "user-agent": UA },
     body: JSON.stringify({ name, domain }),
     signal: AbortSignal.timeout(20_000),
   })
@@ -57,6 +61,7 @@ export async function waitTempCode(
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const res = await fetch(`${base}/v3/email/${encodeURIComponent(address)}/messages`, {
+      headers: { "user-agent": UA },
       signal: AbortSignal.timeout(20_000),
     })
     const list = await res.json().catch(() => null)

@@ -39,18 +39,36 @@ export function cookieOf(credential, names, fallbackName) {
 }
 
 /**
+ * 出站 User-Agent —— **全仓库唯一的那一条**，所有打上游的请求都引用它。
+ *
+ * 上游网关（monkeycode-ai.com / monkeycode-ai.net / baizhi.cloud 以及 ohmyagent
+ * 网关）按 `<产品名>/<版本>` 的形态识别「第三方客户端」，命中就回
+ * `403 TM.00000001 网络繁忙，请稍后重试`。所以：
+ *
+ *   ① 禁止出现 `magpie/…`、`magpie-plugin/…`、`magpie-monkeycode/…` 这类我们自己的名字；
+ *   ② 禁止让宿主的 UA 透传（magpie 给插件的固定 UA 就是 `magpie/<version>`）；
+ *   ③ 禁止 `node` / `Bun/…` / `undici` 这类运行时默认 UA。
+ *
+ * 取值：这两家平台的官方客户端是**网页控制台**（Tauri/WebView2 壳里跑的也是同一个
+ * SPA），仓库里 `src/monkeycode/catalog.mjs` 与 `platformHeaders()` 早先各自内联过
+ * 这条「与网页同形」的完整 Chrome UA —— 现在收敛到这里一份，别再造第二个版本号。
+ */
+export const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+  + "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+/**
  * 平台 REST 请求头。
  *
  * 带 referer / user-agent 只是「尽量与网页同形」的保守选择 —— 平台是普通
  * SPA + REST，没有证据表明它强制校验这两项；但缺失时被边缘 WAF 拦掉的概率更高。
+ * 现在它更是**硬要求**：缺失 ⇒ 透传 `magpie/<version>` ⇒ 网关 403。
  */
 export function platformHeaders(cookie, platformBaseUrl) {
   return {
     cookie,
     accept: "application/json",
     referer: `${platformBaseUrl}/`,
-    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-      + "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "user-agent": UA,
   }
 }
 

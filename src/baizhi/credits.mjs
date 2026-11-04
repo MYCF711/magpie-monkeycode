@@ -7,6 +7,7 @@
 
 import {
   cookieOf, platformRequest, readArrayField, readBoolField, readNumber, readNumberField, unwrapEnvelope,
+  UA,
 } from "../platform-http.mjs"
 
 /** 钱包读数（已从「分」换算成积分）。 */
@@ -179,6 +180,8 @@ export async function fetchRemoteModels(apiKey, site, { fetchImpl = fetch, timeo
       accept: "application/json",
       "anthropic-version": "2023-06-01",
       "x-api-key": apiKey,
+      // 不显式给 UA 就是透传宿主的 `magpie/<version>` ⇒ 网关 403 TM.00000001
+      "user-agent": UA,
     },
     signal: AbortSignal.timeout(timeoutMs),
   })

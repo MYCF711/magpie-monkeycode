@@ -14,6 +14,8 @@ import { usage as buildUsage, usageWindow } from "../quota.mjs"
 import { createUsageCache } from "../usage-cache.mjs"
 
 import { parseCredential, hasToken, signInSuccess } from "../credential.mjs"
+// 出站 UA 的唯一来源（所有打上游的请求共用这一条），见 src/platform-http.mjs 的注释。
+import { UA } from "../platform-http.mjs"
 import { findBrowser } from "../browser-login.mjs"
 import { openInSystemBrowser } from "../system-open.mjs"
 import { BROWSER_LOGIN_TIMEOUT_MS, openControlledBrowser, profileDirFor, startBrowserLogin } from "../session-login.mjs"
@@ -538,7 +540,10 @@ export function makeBaizhiPlugin(site = BAIZHI) {
                   : request?.url ?? ""
 
               const headers = new Headers(init?.headers ?? request?.headers ?? {})
-              for (const name of ["authorization", "content-length", "host"]) headers.delete(name)
+              // user-agent 也必须由我们决定，否则宿主那条 `magpie/<version>` 会原样
+              // 透到 baizhi 网关 ⇒ 网关按 `<产品名>/<版本>` 判成第三方客户端 ⇒ 403。
+              for (const name of ["authorization", "content-length", "host", "user-agent"]) headers.delete(name)
+              headers.set("user-agent", UA)
               headers.set("x-api-key", credential.access_token)
               headers.set("anthropic-version", ANTHROPIC_VERSION)
               if (!headers.has("content-type")) headers.set("content-type", "application/json")

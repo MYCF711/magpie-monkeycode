@@ -25,6 +25,9 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
+// UA 只从 platform-http 取一份（目录、平台 REST、网关共用同一条），见那里的注释。
+import { UA } from "../platform-http.mjs"
+
 /**
  * 已知的真实窗口下限：实测 500K token 的请求照样 200，DeepSeek v4 系列是 1M。
  * 平台标的 200K 只是配置值，照它报会让 agent 提前丢上下文。
@@ -160,8 +163,7 @@ export async function fetchCatalog(cookie, site, { fetchImpl = fetch, timeoutMs 
         cookie: cookie.trim(),
         accept: "application/json",
         referer: `${site.platformBaseUrl}/`,
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-          + "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "user-agent": UA,
       },
       signal: AbortSignal.timeout(timeoutMs),
     })

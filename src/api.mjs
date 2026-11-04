@@ -10,6 +10,7 @@
 //   ③ 每个请求都带超时（AbortSignal.timeout），没有超时的 fetch 会挂死整张卡片
 
 import { BASE } from "./context.mjs"
+import { UA } from "./platform-http.mjs"
 
 /** 上游给的业务错误。带上 status 与 code，调用方才能分流。 */
 export class ApiError extends Error {
@@ -37,7 +38,9 @@ export function headersFor(auth = {}) {
   const h = {
     "content-type": "application/json",
     accept: "application/json",
-    "user-agent": "magpie-plugin/0.0.0", // TODO: 换成真实 UA，有的厂商硬校验它
+    // 唯一 UA 常量在 src/platform-http.mjs。以前这里写 `magpie-plugin/0.0.0`，
+    // 那是 `<产品名>/<版本>` 形态 —— 上游网关见到就回 403 TM.00000001。
+    "user-agent": UA,
   }
   if (auth.token) h.authorization = `Bearer ${auth.token}`
   // TODO: 需要组织码 / 租户头的话在这里加
