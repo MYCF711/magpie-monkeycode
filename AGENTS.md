@@ -250,6 +250,7 @@ PR 是 GitHub 对受保护分支的技术要求（直推报 `GH006`），批准�
 | 27 | **卡片上的账号名是一串看不懂的 ID**（`iam::01a1642a…:user:hw0615…`、`urn:…`、uuid），用户以为是「显示乱码」 | `accountId` 是**名字**，不是身份：手机号（`maskPhone` 对去掉国家码后 ≥11 位的号码打码 `138****8000`；短号返回空串不显示）→ 昵称/邮箱 → **空串**（宿主回退供应商名）。内部 ID 只进 `uid`。**URN 写进 `accountId` 极难改回** —— 续期返回值是合并、插件落盘又多保留旧值，所以续期路径也要重算一遍 | HOOKS 八的「`accountId` 是名字，`uid` 是身份」· `src/account-name.mjs` 的 `resolveAccount` |
 | 28 | 卡片标题写 `华为云 HUAWEI` 之后，`magpie plugin update` 报 `unrecognised dependency format: 华为云 HUAWEI` | `package.json.name` 同时是 bun 依赖键，**必须是 slug、不能有空格**；显示名写 `package.json.magpie.name`（可带空格），provider/registry 同步。旧安装按 UPDATING 的「旧版带空格依赖键」改键 + 目录 + lock，不用 rm+add | README「包名是 slug；显示名写 magpie.name」· UPDATING 迁移 |
 | 29 | 仓库里写了真手机号 / 邮箱 / 本机路径，把那次提交删掉就以为没事了 | **历史里那份还在**：`git log -p`、下载任意旧 commit 都能看到。提交前跑 `node scripts/privacy-scan.mjs`（0 = 干净）；已经 push 过的要 `git filter-repo --replace-text` 重写全部历史再强推，作者邮箱顺手换 `…@users.noreply.github.com`（`git log` 会聚合作者，真邮箱=公开 QQ 号/手机号）。**改前改后 `git rev-parse HEAD^{tree}` 必须一致** —— 一致才说明「用户装到的东西没变」，只是 SHA 变了 | 本文件「八、脱敏」 |
+| 30 | **上游偶发或固定回 403 `TM.00000001`（文案是「网络繁忙，请稍后重试」），重试和换账号都没用**；或者某个 provider 换到新网络 / 新账号后就不通 | 每个打上游的 `fetch` 都**显式**带 `User-Agent`，值是**该服务官方客户端**的 UA —— 绝不写 `<包名>/<版本号>`，也绝不让宿主的 `magpie/<version>` 透传（插件不设 UA 时它就这么上去）。官方是网页就用完整 Chrome UA；有 App / CLI 客户端就用那个客户端的 UA。判据：`node scripts/check-ua.mjs` 退出 0（模板坑表第 38 条） | README「3. User-Agent 常常是硬校验」· `scripts/check-ua.mjs` |
 
 ---
 

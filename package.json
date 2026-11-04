@@ -1,6 +1,6 @@
 {
   "name": "magpie-monkeycode",
-  "version": "0.2.40",
+  "version": "0.2.41",
   "description": "MonkeyCode 国内站 / 国际站 + 百智云 magpie 插件：三家独立供应商，浏览器登录或 API Key 接入，网关签名与积分额度。",
   "type": "module",
   "main": "./index.mjs",
@@ -60,7 +60,8 @@
     "release": "node scripts/release.mjs",
     "score": "node scripts/score.mjs",
     "maintenance": "node scripts/check-maintenance.mjs",
-    "publish:npm": "node scripts/publish-npm.mjs"
+    "publish:npm": "node scripts/publish-npm.mjs",
+    "check:ua": "node scripts/check-ua.mjs ."
   },
   "repository": {
     "type": "git",
