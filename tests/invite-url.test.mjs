@@ -2,6 +2,11 @@
 process.env.MAGPIE_MONKEYCODE_CACHE_DIR = "C:\__magpie_test_cache__"
 // 单测不许真的拉起浏览器；下面的「可选 invite 输入」结构锁也不许因此降级成 skip。
 process.env.MAGPIE_PLUGIN_DISABLE_BROWSER = "1"
+// 账号库 / 邀请策略全都指到不存在的临时 HOME：下面第 ⑥ 组会实例化真工厂并调 ask()，
+// 必须保证它读不到、也碰不到开发机上的真实 plugin-auth.json。
+const TEST_HOME = "C:\\__magpie_test_invite_url_home__"
+process.env.USERPROFILE = TEST_HOME
+process.env.HOME = TEST_HOME
 // tests/invite-url.test.mjs —— 邀请码拼进 URL 的契约（纯函数，零网络、零浏览器）
 //
 // 依据 docs/baizhi-invite-research.md §7.2（2026-11-09 匿名只读探明，两端公开 bundle + 匿名 302）：
@@ -89,6 +94,20 @@ test("百智云：域名只能是 baizhi.cloud —— 绝不用 app.baizhi.cloud
     const raw = loginUrlWithInvite(BAIZHI, code)
     assert.equal(asUrl(raw).hostname, "baizhi.cloud", `码=${JSON.stringify(code)}`)
     assert.ok(!raw.includes("app.baizhi.cloud"), "app.baizhi.cloud 是 SSR 兜底域名（本机 DNS 解析不到）")
+  }
+})
+
+test("百智云：8 位邀请码逐字落进 /sign-in?invite_code=（e · 真机那次的码）", () => {
+  // 实测：`GET /api/v1/user/invite-code` → data.invite_code = "AB12CD34"（8 位大写字母数字）。
+  assert.equal(loginUrlWithInvite(BAIZHI, "AB12CD34"), "https://baizhi.cloud/sign-in?invite_code=AB12CD34")
+  const u = asUrl(loginUrlWithInvite(BAIZHI, "AB12CD34"))
+  assert.equal(u.searchParams.get("invite_code"), "AB12CD34")
+  assert.equal(u.pathname, "/sign-in")
+  // 空码必须保持裸 URL：不许出现 `invite_code=` 这种空值参数。
+  for (const empty of ["", "   ", undefined, null]) {
+    const raw = loginUrlWithInvite(BAIZHI, empty)
+    assert.equal(raw, BAIZHI.loginUrl, `空码 ${JSON.stringify(empty)} 必须一字不改`)
+    assert.equal(asUrl(raw).searchParams.has("invite_code"), false)
   }
 })
 

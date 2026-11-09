@@ -1,6 +1,6 @@
 {
   "name": "magpie-monkeycode",
-  "version": "0.2.42",
+  "version": "0.2.43",
   "description": "MonkeyCode 国内站 / 国际站 + 百智云 magpie 插件：百智云「本机导入」「浏览器登录」成功后自动开通并写入国内 MonkeyCode（后台执行、失败不影响百智云登录、按 uid 去重）；百智云只保留这两条登录路，国内站只认百智云身份，国际站独立（API Key / 账号密码 / 本机导入 / 浏览器）；支持双方邀请码、网关签名与「每日额度 / 积分」计费标识。",
   "type": "module",
   "main": "./index.mjs",

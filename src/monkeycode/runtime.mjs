@@ -648,12 +648,18 @@ export function makePlugin(site) {
                           + "（反复失败的话，先在「百智云 BaiZhiCloud」卡片上用浏览器登录一次，把登录态刷新）",
                       }
                     }
+                    // 一次只开通一个账号是**故意**的：一次 SSO 要 5~90 秒，串起来会让
+                    // 登录面板看起来像卡死。所以把「还剩几个」说清楚，让用户知道再点几次。
+                    const remaining = Number.isFinite(imported.remaining) ? imported.remaining : 0
+                    const progress = remaining > 0
+                      ? `还有 ${remaining} 个百智云账号没开通 —— 再点一次这个入口。`
+                      : "所有百智云账号都开通完了。"
                     return signInSuccess({
                       access: imported.access,
                       expires: 0,
                       accountId: imported.accountId,
                       uid: imported.uid,
-                      ...(existingAccountWithUid(site.id, imported.uid) ? { message: DUPLICATE_MESSAGE } : {}),
+                      ...(existingAccountWithUid(site.id, imported.uid) ? { message: DUPLICATE_MESSAGE } : { message: progress }),
                     })
                   },
                 }

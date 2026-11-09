@@ -31,7 +31,7 @@ import { createInviteStore } from "../invite.mjs"
 import { createInvitePolicy, INVITE_PREFERRED_OPTION } from "../invite-policy.mjs"
 import { loginUrlWithInvite } from "../sites.mjs"
 import {
-  claimDailyCredit, exchangeSessionForKey, fetchProfile, fetchUsage, fetchWallet,
+  claimDailyCredit, exchangeSessionForKey, fetchInviteCode, fetchProfile, fetchUsage, fetchWallet,
 } from "./credits.mjs"
 import { ANTHROPIC_VERSION, BAIZHI, BAIZHI_MAX_OUTPUT_TOKENS, knownBaizhiModel } from "./site.mjs"
 
@@ -535,6 +535,29 @@ export function makeBaizhiPlugin(site = BAIZHI) {
       monkeycodeInviteStore: monkeycodeInvite,
       readBaizhiAccounts: readBaizhiSessions,
       readMonkeycodeAccounts: () => readProvisionedAccounts("monkeycode"),
+      /**
+       * 百智云自己的邀请码只有平台接口知道：
+       * `GET /api/v1/user/invite-code` → `data.invite_code`（8 位字母数字，实测 `AB12CD34`）。
+       *
+       * ⚠ 账号 identity（`user.id`，15 位数字）**不是**邀请码。拿它拼
+       * `/sign-in?invite_code=<user.id>` 会让控制台当场弹红条 `invite_code length must be 8`
+       * —— 这正是 2026-11-09 真机那次「点添加账号 → 落在 /console/ 并弹红条」的根因。
+       *
+       * 任何失败（无会话 / 401 / 缺字段 / 非 8 位 / 超时）都静默返回空串：邀请码是可选加成，
+       * 空串只是这次不带邀请，登录必须照常走完。超时给 5 秒 —— 登录面板上多等更久，
+       * 用户会以为插件坏了。
+       */
+      readAccountInviteCode: async (account) => {
+        try {
+          const result = await fetchInviteCode(account?.cookie, site, {
+            fetchImpl: options.fetchImpl,
+            timeoutMs: 5_000,
+          })
+          return result.ok ? result.code : ""
+        } catch {
+          return ""
+        }
+      },
       manual: {
         baizhi: { key: INVITE_KEY, message: INVITE_MESSAGE },
         monkeycode: { key: MC_INVITE_KEY, message: MC_INVITE_MESSAGE },

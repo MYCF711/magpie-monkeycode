@@ -29,17 +29,53 @@ function assertShape(result) {
 test("最新账号按数值 identity 排序，不按字典序，也不被末尾非数值项带偏", () => {
   const baizhiAccounts = [bz("9"), bz("not-numeric"), bz("10"), bz("2")]
   const monkeycodeAccounts = [mc("mc-nine", "acct-9"), mc("mc-ten", "acct-10"), mc("mc-two", "acct-2")]
-  const result = deriveLatestInviteSource({ baizhiAccounts, monkeycodeAccounts })
+  const result = deriveLatestInviteSource({
+    baizhiAccounts,
+    monkeycodeAccounts,
+    // 百智云码只能由调用方注入（平台 `/api/v1/user/invite-code` 的 data.invite_code）。
+    baizhiCodes: { "10": "AB12CD34" },
+  })
 
   assert.equal(findLatestBaizhiAccount(baizhiAccounts).identity, "10")
   assert.deepEqual(result, {
     sourceIdentity: "10",
-    baizhiCode: "10",
+    baizhiCode: "AB12CD34",
     monkeycodeCode: "mc-ten",
     mode: "latest",
     reason: "latest-numeric-identity",
   })
+  assert.notEqual(result.baizhiCode, result.sourceIdentity, "邀请码不是账号 identity")
   assertShape(result)
+})
+
+test("没注入码表时 baizhiCode 是空串：绝不把 identity 当码（红条 invite_code length must be 8）", () => {
+  const result = deriveLatestInviteSource({
+    baizhiAccounts: [bz("10"), bz("2")],
+    monkeycodeAccounts: [mc("mc-ten", "acct-10")],
+  })
+  assert.equal(result.sourceIdentity, "10")
+  assert.equal(result.baizhiCode, "", "没有平台下发的 8 位码就不带邀请")
+  assert.notEqual(result.baizhiCode, "10")
+})
+
+test("注入的码不是 8 位字母数字（identity / 超长 / 空）时一律丢弃", () => {
+  for (const injected of ["10", "9007199254740993", "AB12CD3", "AB12CD34X", "", "  ", "AB12 CD3"]) {
+    const result = deriveLatestInviteSource({
+      baizhiAccounts: [bz("10")],
+      baizhiCodes: { "10": injected },
+    })
+    assert.equal(result.baizhiCode, "", `非法码 ${JSON.stringify(injected)} 不该进 URL`)
+  }
+})
+
+test("码表同时接受对象与 Map，且只取当前账号那一条", () => {
+  const accounts = [bz("10"), bz("2")]
+  const object = deriveLatestInviteSource({ baizhiAccounts: accounts, baizhiCodes: { "10": "AB12CD34", "2": "ZZ99ZZ99" } })
+  assert.equal(object.baizhiCode, "AB12CD34")
+  const mapped = deriveLatestInviteSource({ baizhiAccounts: accounts, baizhiCodes: new Map([["10", "AB12CD34"]]) })
+  assert.equal(mapped.baizhiCode, "AB12CD34")
+  const missing = deriveLatestInviteSource({ baizhiAccounts: accounts, baizhiCodes: new Map([["2", "ZZ99ZZ99"]]) })
+  assert.equal(missing.baizhiCode, "", "别的账号的码不能顶上来")
 })
 
 test("超长数值 identity 用整数精度比较，超过 Number.MAX_SAFE_INTEGER 也不串序", () => {
@@ -57,9 +93,11 @@ test("没有可比较的数值 identity 时才使用账号添加顺序的最后�
   const result = deriveLatestInviteSource({
     baizhiAccounts: [bz("session-a"), bz("session-b"), bz("session-c")],
     monkeycodeAccounts: [mc("mc-c", "acct-session-c")],
+    baizhiCodes: { "session-c": "AbC12345" },
   })
   assert.equal(result.sourceIdentity, "session-c")
-  assert.equal(result.baizhiCode, "session-c")
+  assert.equal(result.baizhiCode, "AbC12345")
+  assert.notEqual(result.baizhiCode, result.sourceIdentity)
   assert.equal(result.monkeycodeCode, "mc-c")
   assert.equal(result.reason, "latest-addition-order")
 })
@@ -85,8 +123,9 @@ test("MonkeyCode accountId 重名时不猜：即使另一条有 uid 也返回空
   const result = deriveLatestInviteSource({
     baizhiAccounts: [bz("1", "unique"), bz("2", "duplicate")],
     monkeycodeAccounts: [mc("mc-a", "duplicate"), mc("mc-b", "duplicate"), mc("mc-c", "unique")],
+    baizhiCodes: { "2": "CODE0002" },
   })
-  assert.equal(result.baizhiCode, "2", "猴码重名不能影响百智云码")
+  assert.equal(result.baizhiCode, "CODE0002", "猴码重名不能影响百智云码")
   assert.equal(result.monkeycodeCode, "")
 })
 
@@ -99,8 +138,9 @@ test("空 accountId、大小写或空白差异都不算精确匹配", () => {
     const result = deriveLatestInviteSource({
       baizhiAccounts: [bz("7", sourceName)],
       monkeycodeAccounts: [mc("must-not-leak", candidateName)],
+      baizhiCodes: { "7": "CODE0007" },
     })
-    assert.equal(result.baizhiCode, "7")
+    assert.equal(result.baizhiCode, "CODE0007")
     assert.equal(result.monkeycodeCode, "", `${JSON.stringify(sourceName)} 不应匹配 ${JSON.stringify(candidateName)}`)
   }
 })
@@ -109,8 +149,9 @@ test("唯一 accountId 匹配但 uid 为空时猴码为空，不借用其他账�
   const result = deriveLatestInviteSource({
     baizhiAccounts: [bz("7", "matched")],
     monkeycodeAccounts: [mc("", "matched"), mc("other-uid", "other")],
+    baizhiCodes: { "7": "CODE0007" },
   })
-  assert.equal(result.baizhiCode, "7")
+  assert.equal(result.baizhiCode, "CODE0007")
   assert.equal(result.monkeycodeCode, "")
 })
 
@@ -133,6 +174,7 @@ test("preferred on 使用有效 selectedIdentity，而不是数值更新的账�
   const result = resolveInviteSource({
     baizhiAccounts: [bz("1"), bz("3"), bz("2")],
     monkeycodeAccounts: [mc("mc-two", "acct-2")],
+    baizhiCodes: { "2": "CODE0002", "3": "CODE0003" },
     preferredEnabled: true,
     selectedIdentity: "2",
     savedIdentity: "1",
@@ -141,7 +183,7 @@ test("preferred on 使用有效 selectedIdentity，而不是数值更新的账�
   assert.equal(result.mode, "preferred")
   assert.equal(result.reason, "preferred-selected-identity")
   assert.equal(result.sourceIdentity, "2")
-  assert.equal(result.baizhiCode, "2")
+  assert.equal(result.baizhiCode, "CODE0002", "只取所选账号自己的 8 位码")
   assert.equal(result.monkeycodeCode, "mc-two")
 })
 
@@ -193,21 +235,32 @@ test("首次无账号时 manualBaizhiCode 与 manualMonkeycodeCode 分别兜底"
     monkeycodeAccounts: [],
     preferredEnabled: true,
     selectedIdentity: "still-ignored",
-    manualBaizhiCode: "  manual-bz-id  ",
+    manualBaizhiCode: "  MANUAL01  ",
     manualMonkeycodeCode: "  manual-mc-uid  ",
   })
   assert.deepEqual(result, {
-    sourceIdentity: "manual-bz-id",
-    baizhiCode: "manual-bz-id",
+    sourceIdentity: "MANUAL01",
+    baizhiCode: "MANUAL01",
     monkeycodeCode: "manual-mc-uid",
     mode: "manual",
     reason: "no-baizhi-accounts-manual-fallback",
   })
 })
 
+test("手输的不是 8 位字母数字（典型：粘了 identity）就不带，sourceIdentity 逐字保留", () => {
+  const result = resolveInviteSource({
+    manualBaizhiCode: "9007199254740993",
+    manualMonkeycodeCode: "mc-uid",
+    targetIdentity: "999",
+  })
+  assert.equal(result.sourceIdentity, "9007199254740993", "自邀判据仍按用户输入逐字比较")
+  assert.equal(result.baizhiCode, "", "15 位 identity 不许当邀请码 —— 否则红条 invite_code length must be 8")
+  assert.equal(result.monkeycodeCode, "mc-uid")
+})
+
 test("首次手动兜底两路独立：缺百智云码不清空猴码，缺猴码也不清空百智云码", () => {
-  const bzOnly = resolveInviteSource({ manualBaizhiCode: "only-bz", manualMonkeycodeCode: "" })
-  assert.equal(bzOnly.baizhiCode, "only-bz")
+  const bzOnly = resolveInviteSource({ manualBaizhiCode: "ONLYBZ01", manualMonkeycodeCode: "" })
+  assert.equal(bzOnly.baizhiCode, "ONLYBZ01")
   assert.equal(bzOnly.monkeycodeCode, "")
 
   const mcOnly = resolveInviteSource({ manualBaizhiCode: "", manualMonkeycodeCode: "only-mc" })
@@ -220,11 +273,12 @@ test("有账号但 MonkeyCode 匹配不到时猴码为空，手动猴码不能�
   const result = resolveInviteSource({
     baizhiAccounts: [bz("8", "no-counterpart")],
     monkeycodeAccounts: [mc("wrong-account-uid", "someone-else")],
+    baizhiCodes: { "8": "CODE0008" },
     manualBaizhiCode: "manual-must-not-replace",
     manualMonkeycodeCode: "manual-must-not-fill",
   })
   assert.equal(result.sourceIdentity, "8")
-  assert.equal(result.baizhiCode, "8", "猴码缺失不影响百智云码")
+  assert.equal(result.baizhiCode, "CODE0008", "猴码缺失不影响百智云码")
   assert.equal(result.monkeycodeCode, "", "不匹配时绝不拿别的 uid 或手动猴码凑")
 })
 

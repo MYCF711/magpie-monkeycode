@@ -261,6 +261,36 @@ export async function exchangeSessionForKey(cookie, site, { fetchImpl = fetch, t
   }
 }
 
+/**
+ * 自己的百智云邀请码：`GET {platformBaseUrl}/api/v1/user/invite-code`
+ * → `{ code: 0, message: "success", data: { invite_code: "AB12CD34" } }`（2026-11-09 实测）。
+ *
+ * ⚠ 邀请码是平台**单独下发**的 8 位字母数字码，**不是**账号 identity（`user.id`，15 位数字）。
+ * 拿 identity 拼 `/sign-in?invite_code=<user.id>` 会让控制台当场弹红条
+ * `invite_code length must be 8` —— 那正是本函数要根除的形态。
+ *
+ * 失败一律返回 `ok:false`（拿不到码就不带邀请，登录照常继续，见 invite-policy.mjs）。
+ */
+export async function fetchInviteCode(cookie, site, { fetchImpl = fetch, timeoutMs = 10_000 } = {}) {
+  const normalized = cookieOf({ session_cookie: cookie }, site.sessionCookies, site.sessionCookie)
+  if (normalized === undefined) return { ok: false, error: "未配置会话（session_cookie）" }
+  const result = await platformRequest(
+    normalized,
+    `${site.platformBaseUrl}/api/v1/user/invite-code`,
+    { method: "GET", fetchImpl, timeoutMs },
+  )
+  if (!result.ok) return { ok: false, error: result.error }
+  const unwrapped = unwrapEnvelope(result.data)
+  if (!unwrapped.ok) return { ok: false, error: unwrapped.error }
+  const raw = unwrapped.value.invite_code
+  const code = typeof raw === "string" ? raw.trim() : ""
+  // 形态不对（空 / 缺字段 / 上游改成别的编码）就不带：宁可没有邀请，也不能让红条挡住登录。
+  if (!/^[A-Za-z0-9]{8}$/.test(code)) {
+    return { ok: false, error: "上游邀请码不是 8 位字母数字（形态可能已变）" }
+  }
+  return { ok: true, code }
+}
+
 /** 控制台用户资料：`GET /api/v1/user/profile` → `{ id, name }`。 */
 export async function fetchProfile(cookie, site, { fetchImpl = fetch, timeoutMs = 30_000 } = {}) {
   const normalized = cookieOf({ session_cookie: cookie }, site.sessionCookies, site.sessionCookie)

@@ -1,13 +1,33 @@
 // src/invite-source.mjs —— 从调用方给的账号记录推导邀请来源。
 //
 // 边界：本文件没有 I/O、没有 HOME / 网络访问，也不写 inviteStore。账号数组、
-// 首选记忆和手动邀请码全部由调用方注入；inviteStore.extra 的读写由 runtime 负责。
+// 首选记忆、百智云码表和手动邀请码全部由调用方注入；inviteStore.extra 的读写由 runtime 负责。
 //
-// 两家码不能混用：百智云 invite_code = 选中百智云账号的 identity（user.id），
-// MonkeyCode inviter_id = 唯一精确匹配账号的 uid。邀请只在注册时生效，已注册不能补邀。
+// 两家码不能混用，而且**两家的码不是同一种东西**：
+// - 百智云 `invite_code` 是平台单独下发的 **8 位字母数字码**，来自
+//   `GET /api/v1/user/invite-code` 的 `data.invite_code`（2026-11-09 实测 `AB12CD34`）——
+//   **不是**账号 identity（`user.id`，15 位数字）。拿 identity 当码会拼出
+//   `/sign-in?invite_code=<user.id>`，控制台当场弹红条 `invite_code length must be 8`。
+//   所以本文件只认注入进来的 `baizhiCodes`（identity → 8 位码）；没注入就是空串。
+// - MonkeyCode `inviter_id` = 唯一精确匹配账号的 `uid`。
+// 邀请只在注册时生效，已注册不能补邀。
 
 export const INVITE_SOURCE_LATEST = "latest"
 export const INVITE_SOURCE_MANUAL = "manual"
+
+/**
+ * 百智云邀请码的公开形态：8 位字母数字（实测 `AB12CD34`）。
+ *
+ * 这里是**保底闸**：任何来源（注入的码表 / 用户手输 / 老调用方）的值都要过这一关，
+ * 所以 baizhiCode 在结构上不可能等于 15 位 identity，也不可能超过 8 位。
+ */
+const BAIZHI_INVITE_CODE = /^[A-Za-z0-9]{8}$/
+
+/** 只有 8 位字母数字才是邀请码；其余（含 identity、空、超长）一律当「没有码」。 */
+function inviteCodeOf(value) {
+  const code = text(value)
+  return BAIZHI_INVITE_CODE.test(code) ? code : ""
+}
 
 const AUTO_LABEL = "最新注册账号（自动）"
 const MANUAL_LABEL = "手动输入邀请码"
@@ -41,6 +61,21 @@ function usableBaizhiAccounts(value) {
 }
 
 /**
+ * 从调用方注入的码表里取某个 identity 的 8 位码。
+ *
+ * `baizhiCodes` 同时接受对象（`{ [identity]: code }`）与 `Map` —— runtime 用 Map、
+ * 测试与 JSON 场景用对象，两种都要能用。取不到 / 形态不对一律空串。
+ */
+function codeFor(baizhiCodes, identity) {
+  if (identity.length === 0) return ""
+  if (baizhiCodes instanceof Map) return inviteCodeOf(baizhiCodes.get(identity))
+  if (baizhiCodes !== null && typeof baizhiCodes === "object") {
+    return inviteCodeOf(Object.prototype.hasOwnProperty.call(baizhiCodes, identity) ? baizhiCodes[identity] : "")
+  }
+  return ""
+}
+
+/**
  * 数值 identity 用 BigInt 取最大值；一个数值 identity 都没有时才退回添加顺序末尾。
  * 相等时保留先添加的那条，避免同一 identity 的账号来源在重复调用间跳动。
  */
@@ -66,7 +101,33 @@ export function findLatestBaizhiAccount(baizhiAccounts = []) {
   return latestSelection(baizhiAccounts).account
 }
 
-function sourceForAccount(account, monkeycodeAccounts, mode, reason) {
+/**
+ * 本次会作为邀请源的那个账号（与 `resolveInviteSource` 的选取顺序逐条一致）：
+ * preferred 命中已记住 / 已选的 identity 就用它，否则用最新账号。无账号返回 undefined。
+ *
+ * 单独导出是给 `src/invite-policy.mjs` 的 `ask()` 用的：它要拿这个账号去平台取
+ * 8 位邀请码，而「哪个账号」的规则必须与后面 `resolve()` 选出来的那个**是同一个**，
+ * 否则会去问 A 号要码、却拿 B 号当邀请源。
+ */
+export function pickInviteSourceAccount({
+  baizhiAccounts = [],
+  preferredEnabled = false,
+  selectedIdentity,
+  savedIdentity,
+} = {}) {
+  const accounts = usableBaizhiAccounts(baizhiAccounts)
+  if (accounts.length === 0) return undefined
+  if (preferredEnabled === true) {
+    const candidate = text(selectedIdentity ?? savedIdentity)
+    const preferred = candidate.length > 0
+      ? accounts.find((account) => identityOf(account) === candidate)
+      : undefined
+    if (preferred !== undefined) return preferred
+  }
+  return latestSelection(baizhiAccounts).account
+}
+
+function sourceForAccount(account, monkeycodeAccounts, mode, reason, baizhiCodes) {
   const sourceIdentity = identityOf(account)
   const accountId = rawAccountIdOf(account)
   // 重名即无法确定是哪条 MonkeyCode 记录；即使其中只有一条有 uid，也不能猜。
@@ -76,14 +137,15 @@ function sourceForAccount(account, monkeycodeAccounts, mode, reason) {
   const monkeycodeCode = matches.length === 1 ? text(matches[0]?.uid) : ""
   return {
     sourceIdentity,
-    baizhiCode: sourceIdentity,
+    // 百智云码只能来自平台下发的 8 位码（identity → 码的注入表）；**绝不是 identity 本身**。
+    baizhiCode: codeFor(baizhiCodes, sourceIdentity),
     monkeycodeCode,
     mode,
     reason,
   }
 }
 
-function latestSource(baizhiAccounts, monkeycodeAccounts, reason = "") {
+function latestSource(baizhiAccounts, monkeycodeAccounts, reason = "", baizhiCodes) {
   const latest = latestSelection(baizhiAccounts)
   if (latest.account === undefined) {
     return {
@@ -99,12 +161,18 @@ function latestSource(baizhiAccounts, monkeycodeAccounts, reason = "") {
     monkeycodeAccounts,
     "latest",
     reason || (latest.numeric ? "latest-numeric-identity" : "latest-addition-order"),
+    baizhiCodes,
   )
 }
 
-/** 推导最新注册账号的两家邀请码；无账号时返回 mode=none。 */
-export function deriveLatestInviteSource({ baizhiAccounts = [], monkeycodeAccounts = [] } = {}) {
-  return latestSource(baizhiAccounts, monkeycodeAccounts)
+/**
+ * 推导最新注册账号的两家邀请码；无账号时返回 mode=none。
+ *
+ * `baizhiCodes` 是 identity → 8 位邀请码的映射（对象或 Map，可选）：
+ * 拿不到码时 `baizhiCode` 就是空串 —— 空串会让登录 URL 保持裸地址，不弹红条。
+ */
+export function deriveLatestInviteSource({ baizhiAccounts = [], monkeycodeAccounts = [], baizhiCodes } = {}) {
+  return latestSource(baizhiAccounts, monkeycodeAccounts, "", baizhiCodes)
 }
 
 function accountOptions(baizhiAccounts) {
@@ -190,12 +258,15 @@ export function buildInviteSourcePrompt({
  *
  * mode: latest / preferred / manual / skip（deriveLatestInviteSource 另可能返回 none）。
  * reason 是稳定的机器可读原因，便于 runtime 记录日志而不必解析展示文案。
- * 无账号时 sourceIdentity 就是 manualBaizhiCode（规则上它也是百智云 user.id）；
- * 因此 targetIdentity 与它相同也会跳过，避免手动码自邀。
+ * 无账号时 sourceIdentity 就是用户手输的那串（逐字保留，自邀判据照旧）；
+ * `baizhiCode` 则只保留 8 位字母数字形态 —— 手输的是 identity（15 位）就**不带**，
+ * 免得把 `invite_code length must be 8` 的红条带到登录页上。
+ * 因此 targetIdentity 与手输串相同也会跳过，避免手动码自邀。
  */
 export function resolveInviteSource({
   baizhiAccounts = [],
   monkeycodeAccounts = [],
+  baizhiCodes,
   preferredEnabled = false,
   selectedIdentity,
   savedIdentity,
@@ -205,10 +276,10 @@ export function resolveInviteSource({
 } = {}) {
   let result
   if (usableBaizhiAccounts(baizhiAccounts).length === 0) {
-    const baizhiCode = text(manualBaizhiCode)
+    const manual = text(manualBaizhiCode)
     result = {
-      sourceIdentity: baizhiCode,
-      baizhiCode,
+      sourceIdentity: manual,
+      baizhiCode: inviteCodeOf(manual),
       monkeycodeCode: text(manualMonkeycodeCode),
       mode: "manual",
       reason: "no-baizhi-accounts-manual-fallback",
@@ -225,16 +296,18 @@ export function resolveInviteSource({
         monkeycodeAccounts,
         "preferred",
         explicit ? "preferred-selected-identity" : "preferred-saved-identity",
+        baizhiCodes,
       )
     } else {
       result = latestSource(
         baizhiAccounts,
         monkeycodeAccounts,
         candidate.length > 0 ? "preferred-invalid-fallback-latest" : "preferred-empty-fallback-latest",
+        baizhiCodes,
       )
     }
   } else {
-    result = latestSource(baizhiAccounts, monkeycodeAccounts)
+    result = latestSource(baizhiAccounts, monkeycodeAccounts, "", baizhiCodes)
   }
 
   if (text(targetIdentity).length > 0 && text(targetIdentity) === result.sourceIdentity) {

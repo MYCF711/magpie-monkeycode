@@ -592,9 +592,11 @@ test("自动开通只在成功之后：换 Key 失败时一次都不调 provisio
 })
 
 function inviteAccountRecords() {
+  // 每个账号用自己的会话串：假平台按 cookie 回**不同的** 8 位码，
+  // 这样才能证明「换账号就换码」，也才能证明码不是 identity。
   const bz = (identity, accountId) => ({
     accountId,
-    access: JSON.stringify({ session_cookie: "test", user_id: identity }),
+    access: JSON.stringify({ session_cookie: `test-${identity}`, user_id: identity }),
   })
   const mc = (uid, accountId) => ({ uid, accountId, access: "", refresh: "" })
   return {
@@ -606,6 +608,32 @@ function inviteAccountRecords() {
     monkeycode: mc("mc-one", "acct-1"),
     "monkeycode#two": mc("mc-two", "two"),
   }
+}
+
+/**
+ * 假平台：只认邀请码端点 `GET /api/v1/user/invite-code`，按 cookie 回不同的 8 位码。
+ *
+ * 真机实测的形态是 `{"code":0,"message":"success","data":{"invite_code":"AB12CD34"}}`；
+ * 百智云邀请码是**平台单独下发的 8 位字母数字码**，不是账号 identity（15 位 user.id）。
+ * 任何别的端点 / 别的请求一律抛错 —— 邀请策略不该打别的地方。
+ */
+function inviteCodePlatform(byCookie = {}) {
+  const calls = []
+  const fetchImpl = async (url, init) => {
+    const href = String(url)
+    calls.push(href)
+    if (new URL(href).pathname !== "/api/v1/user/invite-code") throw new Error(`不该请求 ${href}`)
+    const cookie = String(init?.headers?.cookie ?? "")
+    return Response.json({ code: 0, message: "success", data: { invite_code: byCookie[cookie] ?? "" } })
+  }
+  return { fetchImpl, calls }
+}
+
+/** 本文件里三个假账号各自的 8 位码（与 `inviteAccountRecords` 的会话串一一对应）。 */
+const INVITE_CODES = {
+  "baizhi_session=test-1": "CODE0001",
+  "baizhi_session=test-2": "CODE0002",
+  "baizhi_session=test-10": "CODE0010",
 }
 
 /** 在临时 HOME 写一份假账号库；所有账号策略测试都不得读开发机真实记录。 */
@@ -648,33 +676,49 @@ test("off 自动最新且不问；on 两站都给顶部 select、去重并共享
     const browser = bz.auth.methods.find((method) => /浏览器登录$/.test(method.label))
     const sso = cn.auth.methods[0]
 
-    assert.equal(await browser.ask({}), null, "off 有账号不能默认弹邀请问题")
-    assert.equal(await sso.ask({}), null)
-    assert.deepEqual(browser.prompts, [])
-    assert.deepEqual(sso.prompts, [])
+    // 邀请码由平台单独下发（8 位字母数字）：URL 上必须是**它**，绝不是账号 identity。
+    // 从第一次 ask 起就得拦住真网络 —— 本文件全程只许打假平台的邀请码端点。
+    const platform = inviteCodePlatform(INVITE_CODES)
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = platform.fetchImpl
+    try {
+      assert.equal(await browser.ask({}), null, "off 有账号不能默认弹邀请问题")
+      assert.equal(await sso.ask({}), null)
+      assert.deepEqual(browser.prompts, [])
+      assert.deepEqual(sso.prompts, [])
 
-    // CLI / old host 不经过 ask，直接 authorize({}) 也必须选最新账号并拼对 URL。
-    const automatic = await browser.authorize({})
-    assert.equal(new URL(automatic.url).searchParams.get("invite_code"), "10")
-    assert.equal(automatic.opened, false, "测试门闩仍在，不能开真实浏览器")
-    const automaticCn = await sso.authorize({})
-    assert.equal(automaticCn.url, "https://baizhi.cloud/console/")
+      // CLI / old host 直接 authorize({}) 也必须选最新账号并拼对 URL；码来自上一次 ask 的缓存。
+      const automatic = await browser.authorize({})
+      const automaticCode = new URL(automatic.url).searchParams.get("invite_code")
+      assert.equal(automaticCode, "CODE0010", "最新账号（identity 10）自己的 8 位码")
+      assert.notEqual(automaticCode, "10", "identity 绝不能被当成 invite_code —— 那会弹 invite_code length must be 8 红条")
+      assert.equal(automatic.opened, false, "测试门闩仍在，不能开真实浏览器")
+      const automaticCn = await sso.authorize({})
+      assert.equal(automaticCn.url, "https://baizhi.cloud/console/")
 
-    enabled = true
-    const select = await browser.ask({})
-    assert.equal(select.type, "select")
-    assert.equal(select.key, "inviteSource")
-    assert.equal(select.placement, "top")
-    assert.deepEqual(select.options.map((option) => option.value), ["latest", "1", "2", "10", "manual"])
-    assert.equal(select.options.filter((option) => option.value === "2").length, 1, "identity 必须去重")
+      enabled = true
+      const select = await browser.ask({})
+      assert.equal(select.type, "select")
+      assert.equal(select.key, "inviteSource")
+      assert.equal(select.placement, "top")
+      assert.deepEqual(select.options.map((option) => option.value), ["latest", "1", "2", "10", "manual"])
+      assert.equal(select.options.filter((option) => option.value === "2").length, 1, "identity 必须去重")
 
-    const preferred = await browser.authorize({ inviteSource: "2" })
-    assert.equal(new URL(preferred.url).searchParams.get("invite_code"), "2")
-    const cnSelect = await sso.ask({})
-    assert.equal(cnSelect.options[0].value, "2", "国内站要读到百智云刚记住的首选")
-    assert.equal(cnSelect.placement, "top")
-    assert.ok(optionCalls.some(([provider, key]) => provider === "baizhi" && key === "invite_preferred"))
-    assert.ok(optionCalls.some(([provider, key]) => provider === "monkeycode" && key === "invite_preferred"))
+      // 宿主顺序：选定账号后再问一次（null），authorize 用同一份 inputs ⇒ 带的是 **2 号**自己的码。
+      assert.equal(await browser.ask({ inviteSource: "2" }), null)
+      const preferred = await browser.authorize({ inviteSource: "2" })
+      const preferredCode = new URL(preferred.url).searchParams.get("invite_code")
+      assert.equal(preferredCode, "CODE0002", "换账号就换码")
+      assert.notEqual(preferredCode, "2")
+      const cnSelect = await sso.ask({})
+      assert.equal(cnSelect.options[0].value, "2", "国内站要读到百智云刚记住的首选")
+      assert.equal(cnSelect.placement, "top")
+      assert.ok(optionCalls.some(([provider, key]) => provider === "baizhi" && key === "invite_preferred"))
+      assert.ok(optionCalls.some(([provider, key]) => provider === "monkeycode" && key === "invite_preferred"))
+      assert.ok(platform.calls.every((href) => new URL(href).pathname === "/api/v1/user/invite-code"))
+    } finally {
+      globalThis.fetch = originalFetch
+    }
   })
 })
 
@@ -690,12 +734,21 @@ test("on 选 manual 后才依次问原有两格：placement top、字段独立�
       assert.ok(!/邀请/.test(method.label), `邀请是可选输入，不许变成独立按钮：${method.label}`)
     }
     const browser = methods.find((method) => /浏览器登录$/.test(method.label))
-    assert.equal((await browser.ask({})).type, "select")
-
-    // `ask()` 与 authorize 策略计算必须纯本地：任何网络请求都当场炸。
+    // 选来源那一步会去平台取 8 位码（本文件用假平台，不联网）。
+    const platform = inviteCodePlatform(INVITE_CODES)
     const originalFetch = globalThis.fetch
-    globalThis.fetch = () => { throw new Error("邀请策略不许发网络请求") }
+    let manualCalls = 0
     try {
+      globalThis.fetch = platform.fetchImpl
+      assert.equal((await browser.ask({})).type, "select")
+      assert.equal(platform.calls.length, 1, "选来源时只取一次码")
+
+      // manual 分支必须**纯本地**：用户在 manual 里填的就是最终码，不需要再问平台。
+      globalThis.fetch = () => {
+        manualCalls += 1
+        throw new Error("manual 分支不许发网络请求")
+      }
+
       const first = await browser.ask({ inviteSource: "manual" })
       assert.equal(first.type, "text")
       assert.equal(first.key, "invite")
@@ -713,14 +766,16 @@ test("on 选 manual 后才依次问原有两格：placement top、字段独立�
 
       const flow = await browser.authorize({
         inviteSource: "manual",
-        invite: "BZ-x",
+        // 百智云那格必须是 8 位字母数字（平台下发的形态）；猴码不受这个长度约束。
+        invite: "BZXCODE1",
         monkeycodeInvite: "MC-y",
       })
-      assert.equal(new URL(flow.url).searchParams.get("invite_code"), "BZ-x")
+      assert.equal(new URL(flow.url).searchParams.get("invite_code"), "BZXCODE1")
       const policy = (name) => JSON.parse(readFileSync(join(home, ".cache", "magpie", name), "utf8"))
-      assert.equal(policy("baizhi-invite.json").code, "BZ-x")
+      assert.equal(policy("baizhi-invite.json").code, "BZXCODE1")
       assert.equal(policy("monkeycode-invite.json").code, "MC-y")
       assert.equal(policy("baizhi-invite-source-invite.json").code, "manual", "首选选择也要写回")
+      assert.equal(manualCalls, 0, "manual 分支一次网络都不许发")
     } finally {
       globalThis.fetch = originalFetch
     }
@@ -984,11 +1039,12 @@ test("邀请码落盘：浏览器登录 authorize 把两格分别写进各自的
     const plugin = await makeBaizhiPlugin()({ client: {} })
     const browser = plugin.auth.methods.find((method) => /浏览器登录$/.test(method.label))
     // 门闩开着（MAGPIE_PLUGIN_DISABLE_BROWSER=1）→ 不开窗；但两格邀请码先解析 + 落盘。
-    const flow = await browser.authorize({ invite: "BZ-x", monkeycodeInvite: "MC-y" })
+    const flow = await browser.authorize({ invite: "BZXCODE1", monkeycodeInvite: "MC-y" })
     assert.equal(flow.opened, false, "测试环境不许开窗")
+    assert.equal(new URL(flow.url).searchParams.get("invite_code"), "BZXCODE1")
 
     const policy = (name) => JSON.parse(readFileSync(join(home, ".cache", "magpie", name), "utf8"))
-    assert.equal(policy("baizhi-invite.json").code, "BZ-x", "百智云那格必须写 baizhi-invite.json")
+    assert.equal(policy("baizhi-invite.json").code, "BZXCODE1", "百智云那格必须写 baizhi-invite.json")
     assert.equal(policy("monkeycode-invite.json").code, "MC-y", "国内站那格必须写 monkeycode-invite.json")
     // 两套码不同文件：混用会让国内站手动路径读到错的码（§5.1 第 3 条锁）。
     assert.notEqual(
@@ -996,6 +1052,12 @@ test("邀请码落盘：浏览器登录 authorize 把两格分别写进各自的
       policy("monkeycode-invite.json").code,
       "两格邀请码写进了同一个文件 —— 两套体系会被串在一起",
     )
+
+    // identity 形态（15 位 user.id）不是邀请码：不落盘、不带进 URL（真机红条根因）。
+    const identity = "9007199254740993"
+    const rejected = await browser.authorize({ invite: identity })
+    assert.equal(new URL(rejected.url).searchParams.get("invite_code"), null, "identity 不许被当成 invite_code")
+    assert.equal(policy("baizhi-invite.json").code, "BZXCODE1", "非法输入不许覆盖已保存的合法码")
   } finally {
     for (const [key, value] of Object.entries(saved)) {
       if (value === undefined) delete process.env[key]
