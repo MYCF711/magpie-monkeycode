@@ -139,7 +139,8 @@ const BAIZHI_COOKIE_DOMAINS = ["baizhi.cloud"]
 // 见 docs/login-unification-audit.md §3.4-b/c。
 
 import {
-  claimCheckin, cookieOf, exchangeSessionForKey, fetchPlan, fetchProfile, fetchWallet, PLAN_LABELS, resolveTier,
+  claimCheckin, cookieOf, exchangeSessionForKey, fetchPlan, fetchProfile, fetchTodaySpend, fetchWallet,
+  PLAN_LABELS, resolveTier,
 } from "./credits.mjs"
 import { FALLBACK_SYSTEM, gatewayHeaders, isUsableCredential, parseBodyQuietly, parseCredential, signInSuccess, signingPrompt } from "./signing.mjs"
 
@@ -258,7 +259,12 @@ async function readUsage(site, credential, fetchImpl) {
   }
   const wallet = await fetchWallet(cookie, site, { fetchImpl })
   if (!wallet.ok) return { error: wallet.error, windows: [] }
-  const plan = await fetchPlan(cookie, site, { fetchImpl })
+  // 订阅档位与「今日消耗」互不依赖 —— 一起发，别让额度卡片为两条辅助读数付两倍延迟。
+  // 两者都不会抛；今日消耗再兜一层 ok:false，失败就当没有这条窗口。
+  const [plan, todaySpend] = await Promise.all([
+    fetchPlan(cookie, site, { fetchImpl }),
+    fetchTodaySpend(cookie, site, { fetchImpl }).catch(() => ({ ok: false })),
+  ])
 
   const windows = []
   // 每日额度：数量型窗口。span = 一天（上游不下发重置时刻，编一个 resetsAt 就是编造）。
@@ -281,6 +287,20 @@ async function readUsage(site, credential, fetchImpl) {
     unit: "积分",
     ...(negative ? { display: `${wallet.balance} 积分（已透支）` } : {}),
   }))
+  // 今日消耗：今天扣了多少积分、多少次调用（与百智云同名窗口同一格式）。
+  // textOnly：这是「今天花了多少」，不是额度 —— 给不出占比，也不该参与路由排序。
+  // 只有读成功才画（0 也照画：「今天还没花」本身就是有用的信息）；失败静默跳过，
+  // 绝不让一条附加读数把整张额度卡片变成错误。
+  if (todaySpend.ok) {
+    const { credit, calls } = todaySpend.spend
+    // 额度内不产生扣费流水：如实说「未扣积分」，而不是「0.000 积分」那种看着像坏了的样子。
+    const used = credit > 0 || calls > 0
+    windows.push(usageWindow({
+      name: "今日消耗",
+      textOnly: true,
+      display: used ? `${credit} 积分 / ${calls} 次调用` : "今日未扣积分（额度内）",
+    }))
+  }
 
   return buildUsage({
     ...(plan === undefined ? {} : { plan: `MonkeyCode ${PLAN_LABELS[plan]}` }),

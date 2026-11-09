@@ -147,6 +147,112 @@ export async function fetchWallet(cookie, site, { fetchImpl = fetch, timeoutMs =
   }
 }
 
+/** 交易流水的用途种类里，算「消耗」的那些一律以 `_consumption` 结尾。 */
+const CONSUMPTION_KIND = /_consumption$/
+
+/** 交易流水分页大小（与网页控制台一致）。 */
+const TRANSACTION_PAGE_SIZE = 50
+
+/** 「今日消耗」最多翻几页 —— 只用来防死循环（上游 `has_next_page` 恒 true 时），不是正常路径。 */
+const TRANSACTION_MAX_PAGES = 5
+
+/**
+ * 读今天的消耗：扣了多少积分、多少次调用。
+ *
+ * 上游：`GET /api/v1/users/wallet/transaction?page=1&page_size=50`
+ * → `data.transactions[]`，按 `created_at`（unix 秒）**倒序**（最新在前）。
+ * `amount` 的单位是**千分之一积分**（与 `fetchWallet` 的 `balance` 同一口径，/1000 才是积分）。
+ *
+ * 只算「消耗」：用途种类以 `_consumption` 结尾（`model_consumption` /
+ * `vm_consumption` / `mcp_tool_consumption`）。签到（`checkin`）、邀请奖励
+ * （`invitation_reward`）、注册奖励（`signup_bonus`）、兑换码（`voucher_exchange`）、
+ * 订阅类都是**进账**，算进去就不是「今日消耗」了。
+ *
+ * 「今天」按**本地日历日**零点算（与百智云那套 `fetchUsage` 同一口径）——
+ * 用 UTC 会把北京时间 00:00–08:00 的消耗算成昨天。
+ *
+ * 任何失败都返回 `{ ok: false, error }`，**绝不抛**：这只是额度卡片上的一行附加信息，
+ * 不该让整个额度面板报错（调用方拿到 ok:false 静默跳过）。
+ */
+export async function fetchTodaySpend(
+  cookie,
+  site,
+  { fetchImpl = fetch, timeoutMs = 10_000, now = () => new Date(), maxPages = TRANSACTION_MAX_PAGES } = {},
+) {
+  const normalized = normalizeCookie(cookie, site.sessionCookie)
+  if (normalized === undefined) return { ok: false, error: "未配置会话（session_cookie）" }
+
+  // 本地日历日零点：`new Date(y, m, d)` 走的是本地时区（不是 UTC）。
+  const current = now()
+  const startOfDay = new Date(current.getFullYear(), current.getMonth(), current.getDate())
+  const since = Math.floor(startOfDay.getTime() / 1000)
+
+  const pageLimit = Number.isFinite(Number(maxPages)) && Number(maxPages) > 0
+    ? Math.floor(Number(maxPages))
+    : 1
+
+  let milli = 0
+  let calls = 0
+  try {
+    for (let page = 1; page <= pageLimit; page += 1) {
+      const response = await platformRequest(
+        normalized,
+        `${site.platformBaseUrl}/api/v1/users/wallet/transaction?page=${page}&page_size=${TRANSACTION_PAGE_SIZE}`,
+        { method: "GET", fetchImpl, timeoutMs },
+      )
+      if (!response.ok) return { ok: false, error: response.error }
+      const unwrapped = unwrapEnvelope(response.data)
+      if (!unwrapped.ok) return { ok: false, error: unwrapped.error }
+      const list = unwrapped.value.transactions
+      if (!Array.isArray(list)) {
+        return { ok: false, error: "交易流水报文里没有 transactions 数组（上游形态可能已变）" }
+      }
+
+      let reachedEarlierDay = false
+      for (const record of list) {
+        if (record === null || typeof record !== "object") {
+          return { ok: false, error: "交易流水里有一条不是对象（上游形态可能已变）" }
+        }
+        const createdAt = readNumber(record.created_at)
+        if (createdAt === undefined) {
+          return { ok: false, error: "交易流水里有一条没有 created_at（上游形态可能已变）" }
+        }
+        // 倒序：第一条比今天更早的记录之后只会更早 —— 就地停，不再往下算、也不再翻页。
+        if (createdAt < since) {
+          reachedEarlierDay = true
+          break
+        }
+        const kind = typeof record.kind === "string" ? record.kind.trim() : ""
+        if (!CONSUMPTION_KIND.test(kind)) continue
+        const amount = readNumber(record.amount)
+        if (amount === undefined) {
+          return { ok: false, error: `交易流水里的消耗记录没有 amount 字段（kind=${kind}，上游形态可能已变）` }
+        }
+        // 千分之一积分 → 积分。上游实测给的是正数；取绝对值只是防它某天改成
+        // 「负数表示扣减」时把「今日消耗」显示成负的。
+        milli += Math.abs(amount)
+        // 调用次数只数模型调用；vm / mcp 工具那些消耗算钱，不算「次调用」。
+        if (kind === "model_consumption") calls += 1
+      }
+      if (reachedEarlierDay) break
+      // 没有明确的 `has_next_page: true` 就当到底了（缺字段时宁可不翻，也不猜）。
+      const pageInfo = unwrapped.value.page
+      if (pageInfo === null || typeof pageInfo !== "object" || pageInfo.has_next_page !== true) break
+    }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
+
+  return {
+    ok: true,
+    spend: {
+      // 千分之一积分 → 积分，四舍五入到 3 位小数（与卡片上的显示同口径）。
+      credit: Math.round(milli) / 1000,
+      calls,
+    },
+  }
+}
+
 /** 读订阅档位：`GET /api/v1/users/subscription`。辅助读数，失败返回 undefined。 */
 export async function fetchPlan(cookie, site, { fetchImpl = fetch, timeoutMs = 10_000 } = {}) {
   const normalized = normalizeCookie(cookie, site.sessionCookie)
