@@ -38,6 +38,10 @@ const DEEPSEEK_CONTEXT = 1_048_576
  *   怎么这么多，直接捕获账号当前可用的模型就行了」）；
  * - 不带前缀的直接扣积分，是任何账号都能走的兜底口径。
  *
+ * 显示名的口径是「<上游模型名> · <计费方式>」：无前缀一律 `· 积分`，带档位前缀一律
+ * `· 每日额度`（判据见 docs/monkeycode-model-billing.md §4）。**同一个模型在两处的名字
+ * 只许差这个后缀** —— 用户要能一眼看出「哪条走每日额度、哪条扣积分」，改前缀不改名字。
+ *
  * ⚠ **magpie 的模型 id 里不能出现 `/`**（2026-11-03 真机踩到）：magpie 把
  * `<a>/<b>` 读成「provider a 的模型 b」，于是 `monkeycode-basic/deepseek-flash`
  * 这类上游 id 会凭空长出 `monkeycode-basic` / `monkeycode-pro` / `monkeycode-ultra`
@@ -45,10 +49,10 @@ const DEEPSEEK_CONTEXT = 1_048_576
  * 无法列出它」）。所以 magpie 里用连字符压平的 id，上游真实 id 交给 `apiId`。
  */
 const MODELS = [
-  ["deepseek-flash", "DeepSeek Flash（按积分计费）", DEEPSEEK_CONTEXT],
-  ["deepseek-v4-flash", "DeepSeek V4 Flash（按积分计费）", DEEPSEEK_CONTEXT],
-  ["deepseek-v4-pro", "DeepSeek V4 Pro（按积分计费）", DEEPSEEK_CONTEXT],
-  ["glm-5", "GLM-5（按积分计费）", undefined],
+  ["deepseek-flash", "DeepSeek-Flash · 积分", DEEPSEEK_CONTEXT],
+  ["deepseek-v4-flash", "DeepSeek-V4-Flash · 积分", DEEPSEEK_CONTEXT],
+  ["deepseek-v4-pro", "DeepSeek-V4-Pro · 积分", DEEPSEEK_CONTEXT],
+  ["glm-5", "GLM-5 · 积分", undefined],
 ]
 
 /** 单次输出上限（Anthropic max_tokens 的默认值，上游实测可到 100000）。 */
@@ -88,3 +92,68 @@ export const SITES = Object.freeze({
 
 /** provider id 列表（顺序即注册顺序）。 */
 export const PROVIDER_IDS = Object.freeze(Object.keys(SITES))
+
+// ── 邀请码拼进 URL ────────────────────────────────────────────────────────
+//
+// 为什么只有这两个函数：两家的邀请机制**只有入口 URL 这一处**（详见
+// docs/baizhi-invite-research.md，2026-11-09 匿名只读探明两端公开 bundle + 匿名 302）：
+//
+//   · MonkeyCode 国内站：邀请码就是邀请人的 `user.id`。
+//     链接 `<首页>/?ic=<code>` 只被**首页**读取（前端 `Y7e` 组件 `useSearchParams` →
+//     `localStorage["ic"]`），`/login` 只从 localStorage 取值 —— 所以直接开
+//     `/login?ic=` 是静默无效的，种草必须落在首页。
+//     登录入口再把 localStorage 里的值拼成
+//     `GET /api/v1/users/login?redirect=&inviter_id=<code>`（前端 4 处模板逐字如此）。
+//   · 百智云：邀请码来自 `GET /api/v1/user/invite-code` 的 `data.invite_code`；
+//     邀请链接是 `https://baizhi.cloud/sign-in?invite_code=<code>`，
+//     `/sign-in` 自己会把码转进 OAuth 启动请求（`/api/v1/user/oauth/login?…&invite_code=`）。
+//     ⚠ 规范域名只有 `baizhi.cloud`；`app.baizhi.cloud` 只是 SSR 兜底（本机 DNS 解析不到）。
+//   · 国际站：同一份前端 bundle，但邀请链接硬编码 `.com` 域名，且它**没有**百智云 SSO
+//     （`GET /api/v1/users/login` 302 到自己的 `/oauth/authorize`，`client_id=` 为空）——
+//     按「国际版保持独立」，带码也一律原样。
+//
+// 三条语义（与 src/invite.mjs 的分工）：
+//   ① `0` / `1` / 空 的「沿用当前码」由 `resolveInvite()` 处理，**到这里已经是最终码**；
+//   ② 空码 ⇒ 返回 `site.loginUrl` 一字不改（日志里出现 `inviter_id=` 就一定是用户真填了）；
+//   ③ 码必须 `encodeURIComponent`，否则 `a&b=c` 会拼出第二个 query 参数（静默改语义）。
+
+/** 统一取码：非字符串、null、空白都当空码。 */
+function inviteCodeOf(code) {
+  return String(code ?? "").trim()
+}
+
+/**
+ * 「浏览器入口」的 URL：用户在窗口里登录时开哪个地址。
+ *
+ * @param {typeof SITES[keyof typeof SITES] | { id: string, loginUrl: string, platformBaseUrl: string }} site
+ * @param {string} [code] 已解析好的邀请码（空 = 不带）
+ * @returns {string}
+ */
+export function loginUrlWithInvite(site, code) {
+  const c = inviteCodeOf(code)
+  if (!c) return site.loginUrl
+  // 国内站：必须落**首页**（`/login` 不读 `?ic=`）。
+  if (site.id === "monkeycode") return `${site.platformBaseUrl}/?ic=${encodeURIComponent(c)}`
+  // 百智云：`/sign-in` 才读 `invite_code`（`/console/` 的登录框不读）。
+  if (site.id === "baizhi") return `${site.platformBaseUrl}/sign-in?invite_code=${encodeURIComponent(c)}`
+  // 国际站（及任何未知站点）：保持独立，不带邀请。
+  return site.loginUrl
+}
+
+/**
+ * 「SSO 入口」的 URL：直接命中登录接口，不加载 SPA 壳（`src/monkeycode/sso-import.mjs`
+ * 在受控浏览器里导航的就是这条）。
+ *
+ * @param {typeof SITES[keyof typeof SITES] | { id: string, platformBaseUrl: string }} site
+ * @param {string} [code] 已解析好的邀请码（空 = 不带）
+ * @returns {string}
+ */
+export function ssoEntryUrlWithInvite(site, code) {
+  const entry = `${site.platformBaseUrl}/api/v1/users/login`
+  // 只有国内站认这条路（国际站的 client_id 是空的，见文件头）。
+  if (site.id !== "monkeycode") return entry
+  const c = inviteCodeOf(code)
+  if (!c) return entry
+  // `redirect` 是前端模板里那个恒为空的参数：留着它，形态与真实前端逐字一致。
+  return `${entry}?redirect=&inviter_id=${encodeURIComponent(c)}`
+}

@@ -22,8 +22,8 @@ const EXPECTED = {
   baizhi: entry.BaizhiAuthPlugin,
 }
 
-/** 有签到的供应商（百智云没有）。 */
-const CHECKIN = new Set(["monkeycode", "monkeycodeintl"])
+/** 有签到 / 每日领取的供应商。 */
+const CHECKIN = new Set(["monkeycode", "monkeycodeintl", "baizhi"])
 
 test("入口恰好导出三个插件函数", () => {
   const functions = Object.entries(entry)

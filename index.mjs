@@ -8,7 +8,7 @@
 // 三个供应商共享的是「magpie 钩子的装配方式」与若干通用件（凭据解析、平台请求、
 // 浏览器会话登录、额度构造器）；协议、凭据、额度口径各自独立：
 //   · MonkeyCode 走自签网关（x-api-key + HMAC 签名），有每日额度与积分、有签到；
-//   · 百智云走标准 Anthropic Messages（只认 x-api-key），按量计费、无签到。
+//   · 百智云走标准 Anthropic Messages（只认 x-api-key），按量计费、每日领积分（checkin 自动领取）。
 //
 // 协议来源：iJetLi/dsh-providers-hub 的 src/monkeycode-*.ts 与 src/baizhi-*.ts
 // （2026-11-03 读取，commit 9047d42）。

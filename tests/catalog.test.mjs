@@ -4,6 +4,10 @@ process.env.MAGPIE_MONKEYCODE_CACHE_DIR = "C:\__magpie_test_cache__"
 import test from "node:test"
 import assert from "node:assert/strict"
 
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+
 import { entryOf, fetchCatalog } from "../src/monkeycode/catalog.mjs"
 
 const site = { id: "monkeycode", platformBaseUrl: "https://monkeycode-ai.com", gatewayBaseUrl: "https://proxy.monkeycode-ai.com/v1" }
@@ -54,15 +58,23 @@ test("fetchCatalog：平台没有可用模型时报失败，不返回空表", as
   assert.equal(result.ok, false)
 })
 
-test("prettyModelName：平台的原样标识翻成人能读的名字", async () => {
-  const { prettyModelName } = await import("../src/monkeycode/catalog.mjs")
-  assert.equal(prettyModelName("monkeycode-basic/glm-5.3-flash"), "GLM-5.3-Flash · 基础档")
-  assert.equal(prettyModelName("monkeycode-pro/hy3"), "HY3 · 专业档")
-  assert.equal(prettyModelName("monkeycode-ultra/qwen3.7-max"), "Qwen3.7-Max · 旗舰档")
+test("prettyModelName：档位一律标「每日额度」，无前缀才标「积分」", async () => {
+  const { entryOf, prettyModelName } = await import("../src/monkeycode/catalog.mjs")
+  // 依据 docs/monkeycode-model-billing.md §4.5：
+  // - 三档（basic/pro/ultra）吃的都是同一个「当日免费额度」，耗尽后默认自动转扣积分
+  //   （官方前端「额度耗尽后消耗积分」开关，A1/A2/A5）—— 名字里该说的是「这条吃不吃日额度」；
+  //   档位名（基础/专业/旗舰）由账号自己的订阅决定，写进名字反而每次都要解释。
+  assert.equal(prettyModelName("monkeycode-basic/glm-5.3-flash"), "GLM-5.3-Flash · 每日额度")
+  assert.equal(prettyModelName("monkeycode-pro/hy3"), "HY3 · 每日额度")
+  assert.equal(prettyModelName("monkeycode-ultra/qwen3.7-max"), "Qwen3.7-Max · 每日额度")
+  // 无前缀 = 官方「付费模型 / 消耗积分使用」分组，直接扣积分（同上 A7）。
   assert.equal(prettyModelName("qwen3.6-plus"), "Qwen3.6-Plus · 积分")
   assert.equal(prettyModelName("minimax-m2.5"), "MiniMax-M2.5 · 积分")
   assert.equal(prettyModelName("deepseek-flash"), "DeepSeek-Flash · 积分")
   assert.equal(prettyModelName(""), "")
+  // 缓存条目上的 displayName 是同一套口径（读缓存时算出来的那个字段，用户看到的就是它）。
+  const entry = entryOf({ id: "u1", model: "monkeycode-basic/deepseek-flash", interface_type: "anthropic" })
+  assert.equal(entry.displayName, "DeepSeek-Flash · 每日额度")
 })
 
 test("probeCatalog：只有 200 才算能用，403/异常一律不可用", async () => {
@@ -113,21 +125,284 @@ test("签名 prompt：没有 system 的请求必须补 FALLBACK_SYSTEM（否则�
   assert.equal(signingPrompt(parseBodyQuietly(patched)), FALLBACK_SYSTEM)
 })
 
-test("filterByTier：basic 账号只吃 basic 池与积分，够不着 pro / ultra", async () => {
+// ── 目录整改契约：档位收窄 + 去重（docs/monkeycode-model-billing.md §4.1-§4.3）──
+//
+// R1 同一 base 名（`apiId` 去掉 `^monkeycode-(basic|pro|ultra)/`）在**同一份目录**里既有
+//    档位条目又有无前缀条目时，隐藏无前缀那条 —— 档位条目才是能力超集（日额度耗尽后
+//    默认自动转积分，见文档 A1/A2/A7），无前缀那条只是「直接扣积分」的重复入口。
+// R2 没有档位孪生的无前缀条目必须保留（它是这条模型唯一的入口）。
+// R3 档位未知/非法时**完全不去重**（和「不收窄」同一原则：不做没有依据的判断）。
+// ④ `MAGPIE_MONKEYCODE_SHOW_CREDIT_TWINS=1` 是逃生阀：只保留原来的档位权限过滤，
+//    不再隐藏积分孪生（怀疑两池不是同一底层权重时用）。
+//
+// 顺序很关键：**先去重后收窄会让列表变空**（basic 账号只有 ultra 孪生时，无前缀那条是唯一能用的）。
+
+const tierModels = () => [
+  { id: "b", apiId: "monkeycode-basic/deepseek-flash" },
+  { id: "p", apiId: "monkeycode-pro/deepseek-flash" },
+  { id: "u", apiId: "monkeycode-ultra/deepseek-flash" },
+  { id: "c", apiId: "deepseek-flash" }, // 无前缀孪生：直接扣积分
+  { id: "g", apiId: "glm-5" },
+]
+// 权限语义单独用一份「每条模型各占一个 base」的目录，避免与去重搅在一起。
+const permissionModels = () => [
+  { id: "b", apiId: "monkeycode-basic/glm-5.3-flash" },
+  { id: "p", apiId: "monkeycode-pro/hy3" },
+  { id: "u", apiId: "monkeycode-ultra/qwen3.7-max" },
+  { id: "c", apiId: "kimi-k2.6" },
+]
+const idsOf = (models) => models.map((model) => model.id)
+
+test("filterByTier：档位权限（原有语义——够不着的高档前缀被挡）", async () => {
+  const { filterByTier } = await import("../src/monkeycode/catalog.mjs")
+  // 与官方前端 `Im()` 同规则：无前缀恒可用，pro 前缀要 pro 及以上，ultra 要做旗舰。
+  assert.deepEqual(idsOf(filterByTier(permissionModels(), "basic")), ["b", "c"])
+  assert.deepEqual(idsOf(filterByTier(permissionModels(), "pro")), ["b", "p", "c"])
+  assert.deepEqual(idsOf(filterByTier(permissionModels(), "ultra")), ["b", "p", "u", "c"])
+})
+
+test("filterByTier ①：tier=basic 时同 base 的无前缀孪生被隐藏（只留档位条目与本模型）", async () => {
   const { filterByTier } = await import("../src/monkeycode/catalog.mjs")
   const models = [
     { id: "b", apiId: "monkeycode-basic/deepseek-flash" },
-    { id: "p", apiId: "monkeycode-pro/deepseek-flash" },
-    { id: "u", apiId: "monkeycode-ultra/deepseek-v4-pro" },
+    { id: "c", apiId: "deepseek-flash" },
     { id: "g", apiId: "glm-5" },
   ]
-  assert.deepEqual(filterByTier(models, "basic").map((m) => m.id), ["b", "g"])
-  assert.deepEqual(filterByTier(models, "pro").map((m) => m.id), ["b", "p", "g"])
-  assert.deepEqual(filterByTier(models, "ultra").map((m) => m.id), ["b", "p", "u", "g"])
-  // 档位未知：不收窄（不做无根据的过滤）。
-  assert.deepEqual(filterByTier(models, undefined).map((m) => m.id), ["b", "p", "u", "g"])
-  assert.deepEqual(filterByTier(models, "free").map((m) => m.id), ["b", "p", "u", "g"])
-  // 收窄后为空 → 原样返回（宁可多列，也不把列表清空）。
+  // `deepseek-flash` 与 `monkeycode-basic/deepseek-flash` 是同一底层模型的两个入口，
+  // 档位那条在额度耗尽后会自己转积分 ⇒ 留档位那条（R1）。
+  assert.deepEqual(idsOf(filterByTier(models, "basic")), ["b", "g"])
+})
+
+test("filterByTier ②：没有档位孪生的无前缀条目保留", async () => {
+  const { filterByTier } = await import("../src/monkeycode/catalog.mjs")
+  const models = [
+    { id: "c", apiId: "qwen3.6-plus" },
+    { id: "g", apiId: "glm-5" },
+    { id: "b", apiId: "monkeycode-basic/deepseek-flash" }, // 孪生不存在 ⇒ 自己就是唯一入口
+  ]
+  assert.deepEqual(idsOf(filterByTier(models, "basic")), ["c", "g", "b"])
+})
+
+test("filterByTier ③：tier 未知 / 非法时完全不去重（也不收窄）", async () => {
+  const { filterByTier } = await import("../src/monkeycode/catalog.mjs")
+  const models = tierModels()
+  const all = ["b", "p", "u", "c", "g"]
+  assert.deepEqual(idsOf(filterByTier(models, undefined)), all)
+  assert.deepEqual(idsOf(filterByTier(models, "free")), all, "不认识的档位名按「未知」处理")
+  assert.deepEqual(idsOf(filterByTier(models, "")), all)
+  assert.deepEqual(idsOf(filterByTier(models, "Ultra")), all, "大小写不同也算未知，别猜")
+})
+
+test("filterByTier ④：MAGPIE_MONKEYCODE_SHOW_CREDIT_TWINS=1 时不隐藏积分孪生", async () => {
+  const { filterByTier } = await import("../src/monkeycode/catalog.mjs")
+  const models = tierModels()
+  const before = process.env.MAGPIE_MONKEYCODE_SHOW_CREDIT_TWINS
+  process.env.MAGPIE_MONKEYCODE_SHOW_CREDIT_TWINS = "1"
+  try {
+    // 授权过滤照旧（basic 仍然吃不到 pro / ultra 前缀），只是不再隐藏无前缀孪生。
+    assert.deepEqual(idsOf(filterByTier(models, "basic")), ["b", "c", "g"])
+    // 档位未知本来就不过滤；逃生阀下更不该少任何一条。
+    assert.deepEqual(idsOf(filterByTier(models, undefined)), ["b", "p", "u", "c", "g"])
+  } finally {
+    // 必须恢复：这个 env 是进程级的，泄漏会让后面的用例（以及整个仓库的其它测试文件）串味。
+    if (before === undefined) delete process.env.MAGPIE_MONKEYCODE_SHOW_CREDIT_TWINS
+    else process.env.MAGPIE_MONKEYCODE_SHOW_CREDIT_TWINS = before
+    assert.equal(process.env.MAGPIE_MONKEYCODE_SHOW_CREDIT_TWINS, before)
+  }
+})
+
+test("filterByTier ⑤：同 base 多个可用档位时保留最高档（pro > basic，ultra > pro）", async () => {
+  const { filterByTier } = await import("../src/monkeycode/catalog.mjs")
+  const two = [
+    { id: "b", apiId: "monkeycode-basic/deepseek-flash" },
+    { id: "p", apiId: "monkeycode-pro/deepseek-flash" },
+  ]
+  // pro 账号两条都够得着 ⇒ 只留 pro 那条；ultra 账号同理（pro 仍高于 basic）。
+  assert.deepEqual(idsOf(filterByTier(two, "pro")), ["p"])
+  assert.deepEqual(idsOf(filterByTier(two, "ultra")), ["p"])
+  const three = [...two, { id: "u", apiId: "monkeycode-ultra/deepseek-flash" }]
+  assert.deepEqual(idsOf(filterByTier(three, "ultra")), ["u"])
+})
+
+test("filterByTier ⑥：收窄 / 去重都不许把列表清空", async () => {
+  const { filterByTier } = await import("../src/monkeycode/catalog.mjs")
+  // 去重必须在收窄**之后**：basic 账号只有 ultra 孪生 + 无前缀两条，
+  // 先按 base 去重就会把唯一能用的无前缀那条也删掉。
+  const onlyUltraTwin = [
+    { id: "u", apiId: "monkeycode-ultra/deepseek-flash" },
+    { id: "c", apiId: "deepseek-flash" },
+  ]
+  assert.deepEqual(idsOf(filterByTier(onlyUltraTwin, "basic")), ["c"])
+  // 收窄后为空（这个号只有 pro 前缀）→ 原样返回，宁可多列也不清空。
   const onlyPro = [{ id: "p", apiId: "monkeycode-pro/x" }]
-  assert.deepEqual(filterByTier(onlyPro, "basic").map((m) => m.id), ["p"])
+  assert.deepEqual(idsOf(filterByTier(onlyPro, "basic")), ["p"])
+  // 空输入就是空表（这不是清空，是本来就没有）。
+  assert.deepEqual(filterByTier([], "basic"), [])
+})
+
+// ── 旧缓存的显示名重算（docs/final-review.md 的 M6：这条契约原先只有手测，没有测试）──
+//
+// 为什么值得写：`displayName` 是**落盘**的（`writeCatalog` 存进去的那份），而缓存要 6 小时
+// 才过期。文案从「基础档/专业档/旗舰档」改成「每日额度」之后，老缓存如果不重算，用户会在
+// 升级后最长 6 小时内一直看到旧标签 —— 而这条路径唯一能改的就是 `readCatalog()` 里的重算。
+// 把它写成测试，才不会有人「为了少一次 map」把它删掉。
+//
+// 顺带锁三件事：① 重算只动 `displayName`，其它字段（uuid/context/output/image/free…）原样
+// 保留；② 重算是**只读**的 —— 不许顺手把缓存文件改写（那会把「拉目录」的失败态写死）；
+// ③ providerId 是参数：国内站的缓存不能在国际站里读出来。
+
+/** 写一份「文案改版前」的缓存（displayName 还是旧标签），返回目录。 */
+function writeLegacyCatalogDir() {
+  const dir = mkdtempSync(join(tmpdir(), "magpie-catalog-legacy-"))
+  const models = [
+    {
+      id: "monkeycode-basic-glm-5-3-flash",
+      apiId: "monkeycode-basic/glm-5.3-flash",
+      uuid: "11111111-1111-4111-8111-111111111111",
+      name: "monkeycode-basic/glm-5.3-flash",
+      displayName: "GLM-5.3-Flash · 基础档",
+      context: 1048576,
+      output: 32000,
+      image: true,
+      free: false,
+    },
+    {
+      id: "monkeycode-pro-hy3",
+      apiId: "monkeycode-pro/hy3",
+      uuid: "22222222-2222-4222-8222-222222222222",
+      name: "monkeycode-pro/hy3",
+      displayName: "HY3 · 专业档",
+      context: 1048576,
+      output: 32000,
+      image: false,
+      free: false,
+    },
+    {
+      id: "monkeycode-ultra-qwen3-7-max",
+      apiId: "monkeycode-ultra/qwen3.7-max",
+      uuid: "33333333-3333-4333-8333-333333333333",
+      name: "monkeycode-ultra/qwen3.7-max",
+      displayName: "Qwen3.7-Max · 旗舰档",
+      context: 1048576,
+      output: 32000,
+      image: true,
+      free: false,
+    },
+    {
+      // 积分孪生：与下一条同 base，去重时该被隐藏。
+      id: "deepseek-flash",
+      apiId: "deepseek-flash",
+      uuid: "44444444-4444-4444-8444-444444444444",
+      name: "deepseek-flash",
+      displayName: "DeepSeek-Flash · 积分",
+      context: 1048576,
+      output: 32000,
+      image: true,
+      free: false,
+    },
+    {
+      id: "monkeycode-basic-deepseek-flash",
+      apiId: "monkeycode-basic/deepseek-flash",
+      uuid: "55555555-5555-4555-8555-555555555555",
+      name: "monkeycode-basic/deepseek-flash",
+      displayName: "DeepSeek-Flash · 基础档",
+      context: 1048576,
+      output: 32000,
+      image: true,
+      free: false,
+    },
+  ]
+  writeFileSync(join(dir, "monkeycode-models-monkeycode.json"), `${JSON.stringify({ fetchedAt: 1, tier: "basic", models }, null, 2)}\n`)
+  return { dir, models }
+}
+
+/** 在一份临时缓存目录下跑 fn，结束后恢复 env 并删目录（env 是进程级的，泄漏会串到别的用例）。 */
+async function withCacheDir(fn) {
+  const previous = process.env.MAGPIE_MONKEYCODE_CACHE_DIR
+  const { dir, models } = writeLegacyCatalogDir()
+  process.env.MAGPIE_MONKEYCODE_CACHE_DIR = dir
+  try {
+    await fn({ dir, models })
+  } finally {
+    if (previous === undefined) delete process.env.MAGPIE_MONKEYCODE_CACHE_DIR
+    else process.env.MAGPIE_MONKEYCODE_CACHE_DIR = previous
+    rmSync(dir, { recursive: true, force: true })
+    assert.equal(process.env.MAGPIE_MONKEYCODE_CACHE_DIR, previous, "必须恢复 MAGPIE_MONKEYCODE_CACHE_DIR")
+  }
+}
+
+test("readCatalog ⑤：旧缓存的「基础档/专业档/旗舰档」读出即重算成「每日额度」，且只读不改文件", async () => {
+  const { readCatalog } = await import("../src/monkeycode/catalog.mjs")
+  await withCacheDir(({ dir, models }) => {
+    const file = join(dir, "monkeycode-models-monkeycode.json")
+    const before = readFileSync(file, "utf8")
+
+    const catalog = readCatalog("monkeycode")
+    assert.ok(catalog, "缓存能读出来")
+    assert.equal(catalog.fetchedAt, 1)
+    assert.equal(catalog.tier, "basic", "落盘的档位要带回来（runtime 靠它收窄）")
+
+    // 三个档位一律「每日额度」；无前缀继续「积分」。
+    assert.deepEqual(
+      catalog.models.map((model) => model.displayName),
+      [
+        "GLM-5.3-Flash · 每日额度",
+        "HY3 · 每日额度",
+        "Qwen3.7-Max · 每日额度",
+        "DeepSeek-Flash · 积分",
+        "DeepSeek-Flash · 每日额度",
+      ],
+    )
+    // 除了 displayName，其它字段一个字都不许动（uuid 还要用来区分记录）。
+    assert.deepEqual(
+      catalog.models,
+      models.map((model) => ({
+        ...model,
+        displayName: model.displayName
+          .replace(/ · 基础档$/, " · 每日额度")
+          .replace(/ · 专业档$/, " · 每日额度")
+          .replace(/ · 旗舰档$/, " · 每日额度"),
+      })),
+    )
+    // 只读：重算不许把缓存文件改写（写回会把「目录拉失败」的旧表钉死）。
+    assert.equal(readFileSync(file, "utf8"), before, "readCatalog 不许改写缓存文件")
+    // providerId 是参数：国内站的缓存不能在国际站里读出来。
+    assert.equal(readCatalog("monkeycodeintl"), undefined, "别把国内站的目录串到国际站")
+  })
+})
+
+test("readCatalog + filterByTier：重算后的目录照常去重（积分孪生隐藏；逃生阀下保留）", async () => {
+  const { filterByTier, readCatalog } = await import("../src/monkeycode/catalog.mjs")
+  await withCacheDir(({ dir, models }) => {
+    const catalog = readCatalog("monkeycode")
+    assert.ok(catalog)
+    // runtime 的路径：读出 → filterByTier(缓存里的 tier)。pro/ultra 前缀被挡掉，
+    // 同 base 的积分孪生（deepseek-flash）被隐藏，只留档位那条。
+    const narrowed = filterByTier(catalog.models, catalog.tier)
+    assert.deepEqual(idsOf(narrowed), ["monkeycode-basic-glm-5-3-flash", "monkeycode-basic-deepseek-flash"])
+    // 留下来的那条也必须是重算过的名字（否则「去重对了、名字还是旧的」会漏网）。
+    assert.equal(narrowed[1].displayName, "DeepSeek-Flash · 每日额度")
+
+    // 逃生阀：只关去重，权限过滤照旧（basic 账号仍然看不到 pro / ultra）。
+    const previousOptOut = process.env.MAGPIE_MONKEYCODE_SHOW_CREDIT_TWINS
+    process.env.MAGPIE_MONKEYCODE_SHOW_CREDIT_TWINS = "1"
+    try {
+      const escaped = filterByTier(readCatalog("monkeycode").models, "basic")
+      assert.deepEqual(
+        idsOf(escaped),
+        ["monkeycode-basic-glm-5-3-flash", "deepseek-flash", "monkeycode-basic-deepseek-flash"],
+      )
+      // 逃生阀下重算照样生效（改名与去重是两件事）。
+      assert.equal(escaped.find((model) => model.id === "deepseek-flash").displayName, "DeepSeek-Flash · 积分")
+      assert.equal(escaped.find((model) => model.id === "monkeycode-basic-deepseek-flash").displayName, "DeepSeek-Flash · 每日额度")
+    } finally {
+      if (previousOptOut === undefined) delete process.env.MAGPIE_MONKEYCODE_SHOW_CREDIT_TWINS
+      else process.env.MAGPIE_MONKEYCODE_SHOW_CREDIT_TWINS = previousOptOut
+    }
+
+    // 去重是按「当前目录」算的，不是把缓存写小 —— 原文件仍有 5 条。
+    const onDisk = JSON.parse(readFileSync(join(dir, "monkeycode-models-monkeycode.json"), "utf8"))
+    assert.equal(onDisk.models.length, 5)
+    assert.equal(models.length, 5, "夹具本身也是 5 条")
+  })
 })

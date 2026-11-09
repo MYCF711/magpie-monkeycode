@@ -15,21 +15,28 @@
 import { usage as buildUsage, usageWindow } from "../quota.mjs"
 import { createUsageCache } from "../usage-cache.mjs"
 
-import { readFileSync } from "node:fs"
-import { homedir } from "node:os"
-import { join } from "node:path"
-
 import { SITES } from "../sites.mjs"
 // 出站 UA 的唯一来源（所有打上游的请求共用这一条），见 src/platform-http.mjs 的注释。
 import { UA } from "../platform-http.mjs"
 import { browserLogin, BROWSER_LOGIN_TIMEOUT_MS } from "./browser-login.mjs"
 import { profileDirFor, readCookiesSilently, startBrowserLogin } from "../session-login.mjs"
+// 邀请策略：国内站与百智云共用；国际站不创建、也不读取这个策略。
+import { createInviteStore } from "../invite.mjs"
+import { createInvitePolicy, INVITE_PREFERRED_OPTION } from "../invite-policy.mjs"
 
-import { signInWithBaizhiSession } from "./sso-import.mjs"
-import { readDesktopMonkeyCodeSession } from "./desktop-session.mjs"
+// 国内站统一走百智云 SSO —— 「复用已登录的百智云」只有这三个入口：
+// 账号库里还有没有没导入过的号 / 导入一个 / 拿一条会话去换 MonkeyCode 账号。
+import { hasUnimportedBaizhiSession, importOneBaizhiAccount, readBaizhiSessions, signInWithBaizhiSession } from "./sso-import.mjs"
+import { readDesktopBaizhiSession, readDesktopMonkeyCodeSession } from "./desktop-session.mjs"
+// 账号库读盘只有一份实现（前缀判据 / 坏库 → ok:false 都在里面），见 provision.mjs。
+import { readProvisionedAccounts } from "./provision.mjs"
 import { loginWithPassword } from "./password-login.mjs"
 import { filterByTier, KNOWN_CONTEXT, isStale, prettyModelName, readCatalog, refreshCatalog, warmCatalog } from "./catalog.mjs"
-import { AGREE_PROTOCOL_JS } from "../baizhi/runtime.mjs"
+// 百智云的两件，只用于回答「窗口里读到的那枚 cookie 算不算登录完成」：
+// BAIZHI 给出控制台的 profile 端点与 cookie 名，fetchProfile 是那个只读查询本身。
+// 它们不碰百智云的推理链路，也不参与国际站的任何判断（国际站不认百智云 SSO）。
+import { BAIZHI } from "../baizhi/site.mjs"
+import { fetchProfile as fetchBaizhiProfile } from "../baizhi/credits.mjs"
 
 /**
  * magpie 里是不是已经有这个 uid 的账号了。
@@ -40,38 +47,96 @@ import { AGREE_PROTOCOL_JS } from "../baizhi/runtime.mjs"
  * 为什么要看这个：点「添加另一个账号」但复用到了同一个身份时，magpie 会按 uid
  * 去重 —— 界面提示「已添加」，而列表里还是那一个。不把这件事说出来，用户会
  * 一直以为插件坏了（2026-11-04 真机）。
+ *
+ * 前缀判据与「坏库怎么算」都在 `provision.mjs` 的 `readProvisionedAccounts` 里
+ * 定一次（`key === providerId || key.startsWith(providerId + "#")`、坏库 ok:false）。
+ * 这里**不再自己解析一遍**：两份判据分开写，迟早有一份先漂移。
+ *   · 坏库 / 读不出来 → false（当作「没有这个账号」：只是少一句提示，不能因此报错）
+ *   · `monkeycodeintl` 的条目一个都不算（`monkeycode` 是它的前缀，所以判据必须带 `#`）
  */
 function existingAccountWithUid(providerId, uid) {
   if (typeof uid !== "string" || uid.length === 0) return false
-  try {
-    const store = JSON.parse(readFileSync(join(homedir(), ".config", "magpie", "plugin-auth.json"), "utf8"))
-    return Object.entries(store ?? {}).some(([key, record]) =>
-      (key === providerId || key.startsWith(`${providerId}#`)) && record?.uid === uid)
-  } catch {
-    return false
-  }
+  const store = readProvisionedAccounts(providerId)
+  if (!store.ok) return false
+  return store.accounts.some((account) => account.uid === uid)
+}
+
+/** 「同一个授权身份只能对应一个 MonkeyCode 账号」的统一说法（复用到旧身份时 magpie 按 uid 去重）。 */
+const DUPLICATE_MESSAGE = "这个百智云账号已经开通过 MonkeyCode（同一账号，凭据已更新）。"
+  + "要加新号，请换一个百智云账号，或用「添加另一个账号」。"
+
+function describeError(error) {
+  return error instanceof Error ? error.message : String(error)
 }
 
 /**
- * 登录期间每秒执行一次：勾掉用户协议 + 点「确认授权」。
+ * 「还没登录态，接下来该点哪」。
  *
- * MonkeyCode 的「快速注册」其实就是百智云的微信扫码登录（点下去会跳到
- * baizhi.cloud/sign-in?redirect=/oauth/authorize&client_id=monkeycode-ai）。
- * 所以用户在窗口里扫码之后，还会落到一张 **OAuth 授权确认页**（「确认授权 / 取消」）
- * —— 不点它，会话永远建立不起来，插件等 cookie 等到超时，用户看到的就是
- * 「观猹账号登录拿不到 cookie 和 api key」（2026-11-04 真机）。
+ * 国内站已经**没有** API Key / 账号密码 / 本机导入 / 浏览器登录了，再让用户去
+ * 「改 Key / 粘贴 JSON」就是指向一个不存在的按钮（国际站四个都还在，照旧说）。
  */
-const LOGIN_AUTOPILOT_JS = `(() => {
-  const boxes = [...document.querySelectorAll('input[type=checkbox]')].filter((el) => !el.checked);
-  for (const box of boxes) box.click();
-  const btn = [...document.querySelectorAll('button,a,[role=button]')]
-    .find((el) => /确认授权|同意授权|允许授权/.test(((el.textContent || '') + '').trim()));
-  if (btn) {
-    btn.click();
-    return 'authorized';
+function reloginHint(site) {
+  return site.id === "monkeycode"
+    ? "请点「用百智云账号开通」—— 它复用你在「百智云 BaiZhiCloud」卡片里登录过的账号（国内站只保留这一条登录路）。"
+    : "请用「浏览器登录」添加账号，或点卡片上的「改 Key」补填完整 JSON（access_token + signing_secret）。"
+}
+
+/**
+ * 拿到一条百智云会话之后的最后一步：换 MonkeyCode 账号（该账号首次登录时由平台自动建号）。
+ *
+ * 邀请码只体现在这**一次**导航的 URL 上（`?redirect=&inviter_id=<code>`）——
+ * 也就是只在「建号那一刻」生效；已经开通过的号带上它也没副作用（服务端照旧 302）。
+ */
+async function finishWithBaizhiCookie(cookie, site, inviteCode) {
+  const signed = await signInWithBaizhiSession(cookie, site, { inviteCode })
+  return signInSuccess({
+    access: JSON.stringify(signed.credential),
+    expires: 0,
+    accountId: signed.nickname ?? "",
+    uid: signed.userId ?? "",
+    // 同一个授权身份只能对应一个 MonkeyCode 账号 —— 复用到旧身份时 magpie 会按 uid
+    // 去重。说清楚，别让「提示成功但列表没变」变成谜。
+    ...(existingAccountWithUid(site.id, signed.userId ?? "") ? { message: DUPLICATE_MESSAGE } : {}),
+  })
+}
+
+/**
+ * 「窗口里读到的那枚 cookie 算不算登录完成」。
+ *
+ * 窗口一打开平台就下发**匿名**会话，读到 cookie 远早于「用户登完」；判据只能问平台：
+ * `GET /api/v1/user/profile` 匿名回 401（→ undefined），真会话才回名字。
+ * 网络失败同样按「还没登完」处理（继续等），不能让一次抖动把登录判死。
+ *
+ * 同一份 cookie 只问一次：轮询每秒一次，重复问不会更快知道结果，只会多打上游。
+ */
+function createBaizhiCookieVerifier() {
+  const seen = new Map()
+  return async function verified(candidate) {
+    if (seen.has(candidate)) return seen.get(candidate)
+    let ok = false
+    try {
+      ok = (await fetchBaizhiProfile(candidate, BAIZHI)) !== undefined
+    } catch {
+      ok = false
+    }
+    seen.set(candidate, ok)
+    return ok
   }
-  return 'ok';
-})()`
+}
+
+/** 百智云控制台：用户在窗口里登录 / 换号的地方（与 MonkeyCode 自己的登录页无关）。 */
+const BAIZHI_CONSOLE_URL = "https://baizhi.cloud/console/"
+/** 控制台会话由两枚 cookie 组成（sl-session 是设备/风控），两枚到齐才算登录完成。 */
+const BAIZHI_COOKIE_NAMES = ["sl-session", "baizhi_session"]
+const BAIZHI_COOKIE_DOMAINS = ["baizhi.cloud"]
+
+// ⚠ 这里刻意**没有**「自动勾协议 / 自动点确认授权」的脚本。
+//
+// 两种接法都被否掉：① 替用户点登录页那排图标 —— 第 4 个是观猹，点下去等于把另外
+// 四种方式（微信 / 支付宝 / 抖音 / GitHub）从用户手里拿走（AGENTS.md 0.4）；
+// ② 每隔一秒点一次「确认授权」—— 国内站改造后只剩百智云 SSO 一条入口，
+// 那一步由 `signInWithBaizhiSession` 用 CDP 在后台完成，再叠一层只会和它抢。
+// 见 docs/login-unification-audit.md §3.4-b/c。
 
 import {
   claimCheckin, cookieOf, exchangeSessionForKey, fetchPlan, fetchProfile, fetchWallet, PLAN_LABELS, resolveTier,
@@ -187,7 +252,7 @@ async function readUsage(site, credential, fetchImpl) {
   if (cookie === undefined) {
     return {
       error: "未配置网页会话（session_cookie）—— 推理可用，但额度 / 积分 / 签到只认网页登录态。"
-        + "请用「浏览器登录」添加账号，或点卡片上的「改 Key」补填 session cookie。",
+        + reloginHint(site),
       windows: [],
     }
   }
@@ -302,9 +367,24 @@ async function signInWithBrowser(site, { fetchImpl, signal } = {}) {
  * @param {typeof SITES[keyof typeof SITES]} site
  */
 export function makePlugin(site) {
-  return async (_ctx, _options) => {
+  return async (ctx = {}, _options = {}) => {
     // 额度卡片会被频繁刷新：成功 60 秒、失败 5 秒，同 key 并发合并。
     const usageCache = createUsageCache({ ttlMs: 60_000, failTtlMs: 5_000 })
+    // 只有国内站创建邀请策略；国际站既不声明开关，也不读账号库或邀请文件。
+    const invitePolicy = site.id === "monkeycode"
+      ? createInvitePolicy({
+        ctx,
+        provider: site.id,
+        dualManual: false,
+        preferredStore: createInviteStore("baizhi-invite-source"),
+        monkeycodeInviteStore: createInviteStore("monkeycode"),
+        readBaizhiAccounts: readBaizhiSessions,
+        readMonkeycodeAccounts: () => readProvisionedAccounts("monkeycode"),
+        manual: {
+          monkeycode: { key: "invite", message: "邀请码（可选，只影响首次开通）" },
+        },
+      })
+      : undefined
 
     return {
       // ── ① 声明 provider ────────────────────────────────────────────
@@ -315,7 +395,7 @@ export function makePlugin(site) {
         provider.name ??= site.displayName
         provider.npm ??= SDK
         provider.api ??= site.gatewayBaseUrl
-        provider.models = { ...configModels(site), ...(provider.models ?? {}) }
+        provider.models = configModels(site)
       },
 
       // ── ⑧ 每请求加头 ───────────────────────────────────────────────
@@ -330,7 +410,7 @@ export function makePlugin(site) {
         id: site.id,
         async models(provider) {
           // 网关没有远端目录（GET /v1/models 实测 405），这个静态表就是全量事实。
-          return { ...configModels(site), ...(provider.models ?? {}) }
+          return configModels(site)
         },
       },
 
@@ -340,8 +420,13 @@ export function makePlugin(site) {
         icon: site.icon,
         maxConcurrency: 4,
         refreshLead: 5 * 60_000,
+        ...(site.id === "monkeycode" ? { options: [{ ...INVITE_PREFERRED_OPTION }] } : {}),
 
         methods: [
+          // 国内站（monkeycode）只剩**一条**登录路 —— 「用百智云账号开通」（见下面的 SSO 方法）。
+          // 用户要求「国内 MonkeyCode 统一通过百智云 SSO 复用凭证」，所以 API Key / 账号密码 /
+          // 本机导入 / 浏览器登录在国内站全部下线；国际站不认百智云 SSO，四个原样保留。
+          ...(site.id === "monkeycode" ? [] : [
           {
             // ⚠ 刻意**不写 authorize**：magpie 的 api 方式只收一个字符串，
             // 有 authorize 时 inputs 只在有 prompts 时才传（见 HOOKS 陷阱 2），
@@ -497,6 +582,7 @@ export function makePlugin(site) {
               }
             },
           },
+          ]),
           // ⚠ 这个入口**只给国内站**：国际站不认百智云 SSO（2026-11-04 实测）。
           // 国际站的 `GET /api/v1/users/login` 302 到**它自己的** `/oauth/authorize`
           // （`client_id=` 是空的，不经过 baizhi.cloud）；把百智云会话注入窗口再走一遍，
@@ -507,74 +593,136 @@ export function makePlugin(site) {
             type: "oauth",
             label: `${site.displayName} 用百智云账号开通`,
             /**
-             * 用百智云的账号体系直接开通 MonkeyCode（OAuth SSO，首次登录自动建号）。
+             * 用已登录的百智云账号开通 MonkeyCode（OAuth SSO，首次登录由平台自动建号）。
              *
-             * 窗口开的是**百智云控制台**：用户在里面登录/切换账号，插件读到
-             * `sl-session` + `baizhi_session` 之后，在后台无头浏览器里完成
-             * `monkeycode → baizhi.cloud/oauth/authorize → callback` 这一步。
+             * 「复用」的优先级（见 docs/login-unification-audit.md §3.2）：
+             *   ① magpie 账号库里还有没导入过的百智云账号 → 零窗口，一次导入一个
+             *   ② 本机桌面客户端里的百智云会话             → 零窗口
+             *   ③ 持久 profile 里静默读到的百智云会话       → 零窗口
+             *   ④ 一个都没有才开窗，让用户在百智云控制台登一次（登录态留在持久 profile，下次静默命中）
              *
-             * 一个账号点一次；想再开一个号，在窗口里换号再点。
+             * 前三步都不重登：用户登过一次百智云，两个 MonkeyCode 站点都该能进。
+             * 窗口只在第 ④ 步出现；`accept` 会真的问一次平台 —— 读到 cookie ≠ 登录成功
+             * （窗口一打开就有匿名会话）。
              */
-            async authorize() {
-              // 百智云的 cookie 名与域：控制台同时下发 sl-session（设备/风控）
-              // 与 baizhi_session（登录），两枚都要；且必须精确落在 baizhi.cloud 上
-              // （同名 sl-session 还有两枚属于 ai-models / agent-toolkit 子域）。
-              const names = ["sl-session", "baizhi_session"]
-              const domains = ["baizhi.cloud"]
-              const profileDir = profileDirFor("baizhi")
-              // 立刻返回、后台起飞：等到 callback 才启动的话，用户会先对着
-              // 一块「正在开始登录…」而屏幕上一个窗口都没有。
-              // ⚠ 先真的把「登录态/窗口」拿到手，再决定 opened。
+            get prompts() {
+              return invitePolicy.prompts()
+            },
+            /** off + 有账号不问；on 先选来源；manual / 无账号才问原有邀请码文本。 */
+            async ask(inputs = {}) {
+              return invitePolicy.ask(inputs)
+            },
+            async authorize(inputs = {}) {
+              // URL / SSO 只使用 resolver 的 monkeycodeCode；手动码与首选选择在本地写回。
+              const inviteResolver = invitePolicy.prepare(inputs)
+              const inviteCode = inviteResolver().monkeycodeCode
+
+              // ⚠ 单测门闩：账号策略以上只读隔离账号库 / cache；这里起不读桌面登录态、
+              // 不读持久浏览器 profile，更不许拉起 Chromium。给一个可测的失败 flow，不抛错。
+              if (process.env.MAGPIE_PLUGIN_DISABLE_BROWSER === "1") {
+                return {
+                  url: BAIZHI_CONSOLE_URL,
+                  opened: false,
+                  method: "auto",
+                  instructions: "测试环境（MAGPIE_PLUGIN_DISABLE_BROWSER=1）：不读本机登录态、不开窗口。",
+                  async callback() {
+                    return { type: "failed", error: "受控浏览器未启动（测试环境）" }
+                  },
+                }
+              }
+
+              // ① magpie 账号库里还有没导入过的百智云账号 → 完全无窗，一次只导一个。
+              if (hasUnimportedBaizhiSession()) {
+                return {
+                  url: BAIZHI_CONSOLE_URL,
+                  opened: true,
+                  method: "auto",
+                  instructions: "正在用 magpie 里已登录的百智云账号开通 MonkeyCode（不会弹窗口）。"
+                    + "一次开通一个账号；还有别的百智云账号，就再点一次这个入口。",
+                  async callback() {
+                    const imported = await importOneBaizhiAccount(site, { inviteCode })
+                    if (!imported.ok) {
+                      return {
+                        type: "failed",
+                        error: `用百智云账号开通失败：${imported.error}`
+                          + "（反复失败的话，先在「百智云 BaiZhiCloud」卡片上用浏览器登录一次，把登录态刷新）",
+                      }
+                    }
+                    return signInSuccess({
+                      access: imported.access,
+                      expires: 0,
+                      accountId: imported.accountId,
+                      uid: imported.uid,
+                      ...(existingAccountWithUid(site.id, imported.uid) ? { message: DUPLICATE_MESSAGE } : {}),
+                    })
+                  },
+                }
+              }
+
+              // ② 本机桌面客户端里已有百智云会话 → 无窗（不开浏览器、不用再登一次）。
+              const desktop = readDesktopBaizhiSession()
+              if (desktop !== undefined) {
+                return {
+                  url: BAIZHI_CONSOLE_URL,
+                  opened: true,
+                  method: "auto",
+                  instructions: "正在用本机桌面客户端里的百智云登录态开通 MonkeyCode（不会弹窗口）。",
+                  async callback() {
+                    try {
+                      return await finishWithBaizhiCookie(desktop.cookie, site, inviteCode)
+                    } catch (error) {
+                      return { type: "failed", error: `用百智云账号开通失败：${describeError(error)}` }
+                    }
+                  },
+                }
+              }
+
+              // ③ 持久 profile 里静默读一次；④ 没有才开窗。
               //
               // 后台起飞 + 立刻 opened:true 的组合在 magpie 宿主里会翻车：spawn 失败时
               // 既没窗口、又因为 opened:true 而没人去开系统浏览器（2026-11-04 真机卡死）。
-              // 这里最多等 12 秒（静默读 1-2 秒 + 窗口启动 1-2 秒）：
-              //   · 静默命中 profile → 不需要窗口，opened:true 但什么都不会弹
-              //   · 窗口起来了     → opened:true
-              //   · 起不来         → opened:false，交给 magpie 开系统浏览器
+              // 所以这里最多等 12 秒先把「登录态 / 窗口」的结论拿到手，再决定 opened。
+              const verify = createBaizhiCookieVerifier()
               let flowError = ""
               let ready
               try {
                 ready = await Promise.race([
                   (async () => {
-                    // 单测门闩：不许真的拉起浏览器。
-                    if (process.env.MAGPIE_PLUGIN_DISABLE_BROWSER === "1") {
-                      throw new Error("受控浏览器未启动（测试环境）")
-                    }
-                    // ① 先静默：profile 里已有登录态就直接用（不弹窗、不等用户）。
-                    //    这就是「一个百智云账号，两站都能进」的那一步。
-                    const silent = await readCookiesSilently({ cookieNames: names, cookieDomains: domains, profileDir })
+                    // ③ 持久 profile：登过一次就一直有效，静默读到就直接用（不弹窗、不等用户）。
+                    const silent = await readCookiesSilently({
+                      cookieNames: BAIZHI_COOKIE_NAMES,
+                      cookieDomains: BAIZHI_COOKIE_DOMAINS,
+                      profileDir: profileDirFor("baizhi"),
+                    })
                     if (silent !== undefined) return { mode: "silent", cookie: silent }
-                    // ② 没有才让人登一次（持久 profile：这次登完，下次静默命中）。
+                    // ④ 最后才开窗（持久 profile：这次登完，下次静默命中）。
                     const flow = await startBrowserLogin({
-                      url: "https://baizhi.cloud/console/",
-                      cookieNames: names,
-                      cookieDomains: domains,
-                      profileDir,
+                      url: BAIZHI_CONSOLE_URL,
+                      cookieNames: BAIZHI_COOKIE_NAMES,
+                      cookieDomains: BAIZHI_COOKIE_DOMAINS,
+                      profileDir: profileDirFor("baizhi"),
                       timeoutMs: BROWSER_LOGIN_TIMEOUT_MS,
-                      async accept() {
-                        return true
-                      },
+                      accept: verify,
                     })
                     return { mode: "window", flow }
                   })(),
                   new Promise((_, reject) => setTimeout(() => reject(new Error("登录窗口启动超时（12 秒）")), 12_000)),
                 ])
               } catch (error) {
-                flowError = error instanceof Error ? error.message : String(error)
+                flowError = describeError(error)
                 ready = undefined
               }
               const bail = ready === undefined
               return {
-                url: "https://baizhi.cloud/console/",
+                url: BAIZHI_CONSOLE_URL,
                 // 起不来就让 magpie 去开系统浏览器 —— 用户至少能把地址打开。
                 opened: !bail,
                 instructions: bail
-                  ? `受控浏览器没能启动（${flowError || "未知原因"}）。已在你的默认浏览器打开 ${site.platformBaseUrl}，`
-                    + "登录后回到这里点「重试」；或者改用「API Key」方式粘贴一行 JSON："
-                    + '{"session_cookie":"sl-session=…; baizhi_session=…"}'
-                  : "在打开的窗口里登录你的百智云账号（登录方式自己挑，插件不会替你点）。"
-                    + "登录完成后本页会自动开通 MonkeyCode。",
+                  ? `受控浏览器没能启动（${flowError || "未知原因"}）。已在你的浏览器打开 ${BAIZHI_CONSOLE_URL} —— `
+                    + "登录完成后回到这里点「重试」；或者改用本机 MonkeyCode 桌面版（或在「百智云 BaiZhiCloud」卡片上登录一次），"
+                    + "插件下次就能直接复用那份登录态，连窗口都不用开。"
+                  : "在打开的窗口里登录你的百智云账号（微信 / 支付宝 / 抖音 / GitHub / 观猹 都行，插件不会替你点）。"
+                    + "登录完成后本页会自动开通 MonkeyCode；登录态会留在本机，下次直接复用。",
                 method: "auto",
                 async callback() {
                   if (bail) {
@@ -584,30 +732,20 @@ export function makePlugin(site) {
                   try {
                     baizhiCookie = ready.mode === "silent" ? ready.cookie : (await ready.flow.wait()).cookie
                   } catch (error) {
-                    return { type: "failed", error: error instanceof Error ? error.message : String(error) }
+                    return { type: "failed", error: `用百智云账号开通失败：${describeError(error)}` }
                   }
                   try {
-                    const signed = await signInWithBaizhiSession(baizhiCookie, site)
-                    const duplicated = existingAccountWithUid(site.id, signed.userId ?? "")
-                    return signInSuccess({
-                      access: JSON.stringify(signed.credential),
-                      expires: 0,
-                      accountId: signed.nickname ?? "",
-                      uid: signed.userId ?? "",
-                      // 同一个授权身份只能对应一个 MonkeyCode 账号 —— 复用到旧身份时
-                      // magpie 会按 uid 去重。说清楚，别让「提示成功但列表没变」变成谜。
-                      ...(duplicated
-                        ? { message: "这个百智云账号已经开通过 MonkeyCode（同一账号，凭据已更新）。要加新号，请换一个百智云账号登录，或用「添加另一个账号」。" }
-                        : {}),
-                    })
+                    return await finishWithBaizhiCookie(baizhiCookie, site, inviteCode)
                   } catch (error) {
-                    return { type: "failed", error: error instanceof Error ? error.message : String(error) }
+                    return { type: "failed", error: `用百智云账号开通失败：${describeError(error)}` }
                   }
                 },
               }
             },
           },
           ] : []),
+          // 国际站原样保留「浏览器登录」（国内站已下线 —— 国内只剩百智云 SSO 一条路）。
+          ...(site.id === "monkeycode" ? [] : [
           {
             type: "oauth",
             label: `${site.displayName} 浏览器登录`,
@@ -630,6 +768,7 @@ export function makePlugin(site) {
               }
             },
           },
+          ]),
         ],
 
         /**
@@ -650,7 +789,7 @@ export function makePlugin(site) {
             if (typeof raw === "string" && raw.trim().length > 0) {
               throw new Error(
                 `${site.displayName}: 凭据缺少 signing_secret（网关签名密钥），每个请求都会被 403。`
-                + "请重新登录，或粘贴完整 JSON：{\"access_token\":\"oma_…\",\"signing_secret\":\"…\"}",
+                + `请重新登录：${reloginHint(site)}`,
               )
             }
             return {}
@@ -776,7 +915,7 @@ export function makePlugin(site) {
           if (cookieOf(credential, site.sessionCookie) === undefined) {
             return {
               outcome: "ineligible",
-              message: "签到只认网页登录态：请用「浏览器登录」添加账号，或补填 session cookie",
+              message: `签到只认网页登录态：${reloginHint(site)}`,
             }
           }
           const result = await claimCheckin(credential, site)
@@ -798,4 +937,4 @@ export function makePlugin(site) {
   }
 }
 
-export const _internal = { makePlugin, configModels, credentialOf, readUsage, signInWithBrowser }
+export const _internal = { makePlugin, configModels, credentialOf, readUsage, signInWithBrowser, existingAccountWithUid }
