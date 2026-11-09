@@ -60,11 +60,20 @@ const BRANDS = Object.freeze({
   claude: "Claude",
 })
 
-/** 档位前缀 → 中文标签。没前缀的表示「不走订阅额度」，就不加后缀。 */
+/**
+ * 档位前缀 → 中文标签。没前缀的表示「不走额度、直接扣积分」，就不加后缀。
+ *
+ * ⚠ 三档**不是三个独立额度池**（2026-11-09 核实，见 docs/monkeycode-model-billing.md §2）：
+ * `GET /api/v1/users/wallet` 只下发一对 `daily_token_balance` / `daily_token_limit`
+ * （一个账号一个当日额度读数），前缀决定的是「能用哪些模型」（模型范围），
+ * 平台前端也是这个口径（`ja()` 取前缀、`Im()` 按 plan 判权限）。
+ * 日额度耗尽后三档一律默认自动转扣积分（平台「额度耗尽后消耗积分」开关，默认开），
+ * 所以名字里该说的是「这条吃不吃日额度」，不是「基础/专业/旗舰」。
+ */
 const TIERS = Object.freeze({
-  "monkeycode-basic": "基础档",
-  "monkeycode-pro": "专业档",
-  "monkeycode-ultra": "旗舰档",
+  "monkeycode-basic": "每日额度",
+  "monkeycode-pro": "每日额度",
+  "monkeycode-ultra": "每日额度",
 })
 
 /**
@@ -72,10 +81,11 @@ const TIERS = Object.freeze({
  *
  * 平台给的是 `<档位>/<模型>`：`monkeycode-basic/glm-5.3-flash`、`qwen3.6-plus`…
  * 同一个模型会在不同档位各出现一条（`deepseek-flash` 有三条：无前缀 / basic / pro），
- * 因为它们是**不同的额度池**，不是同一个东西点三遍。
+ * 那是**同一个模型的三个入口**（档位前缀决定能不能用、走不走日额度），不是三个额度池 ——
+ * 无前缀那条与档位那条在 `filterByTier()` 里会被去重（同 base 只留档位那条）。
  *
  * @param {string} raw 平台给的 model 字段
- * @returns {string} 例如 `GLM-5.3-Flash · 基础档`
+ * @returns {string} 例如 `GLM-5.3-Flash · 每日额度`
  */
 export function prettyModelName(raw) {
   const text = String(raw ?? "").trim()
@@ -208,14 +218,27 @@ export function writeCatalog(providerId, models, { tier } = {}) {
   }
 }
 
-/** 读缓存；没有或损坏返回 undefined。 */
+/**
+ * 读缓存；没有或损坏返回 undefined。
+ *
+ * ⚠ `displayName` **在这里重算**，不用缓存里存的那份：缓存是先落盘的，文案改过之后
+ * 老缓存里的旧标签（`· 基础档`）会一直顶在 magpie 的模型列表上，而这份缓存要 6 小时
+ * 才过期（还得等平台上登录态可用）。显示名只由 `apiId` / `name` 决定，随时能重算 ——
+ * 改文案不该要求用户重拉目录。
+ */
 export function readCatalog(providerId) {
   try {
     const parsed = JSON.parse(readFileSync(catalogPath(providerId), "utf8"))
     if (!Array.isArray(parsed?.models) || parsed.models.length === 0) return undefined
+    const models = parsed.models.map((model) => {
+      if (model === null || typeof model !== "object") return model
+      const source = typeof model.apiId === "string" && model.apiId.trim().length > 0 ? model.apiId : model.name
+      const displayName = prettyModelName(source)
+      return displayName.length === 0 || displayName === model.displayName ? model : { ...model, displayName }
+    })
     return {
       fetchedAt: Number(parsed.fetchedAt) || 0,
-      models: parsed.models,
+      models,
       // 落盘时用的档位。读的时候再按它筛一遍（幂等），这样即使某次刷新没传
       // tier，也不会把 pro / ultra 又放回来。
       ...(typeof parsed.tier === "string" ? { tier: parsed.tier } : {}),
@@ -303,23 +326,81 @@ export async function probeCatalog(credential, site, models, { concurrency = 4, 
 }
 
 /**
- * 订阅档位 → 能用的额度池。数字越大越贵。
+ * 订阅档位 → 能用的模型范围。数字越大越贵（也越宽）。
  *
- * 平台的目录是**按账号给的一份清单**，但它把同一个模型的三个额度池都列了
+ * 平台的目录是**按账号给的一份清单**，但它把同一个模型按档位前缀各列一条
  * （`monkeycode-basic/x` `monkeycode-pro/x` `monkeycode-ultra/x`）。basic 账号拿到
  * pro / ultra 那几条，选了就是 403 —— 用户看到的是「怎么这么多」，挨个试才发现
- * 一半用不了。所以按账号档位收窄：低档只能吃低档的池。
+ * 一半用不了。所以按账号档位收窄：低档只看得到低档。
+ *
+ * ⚠ 前缀管的是**权限**，不是「三块各自独立的额度」：一个账号只有一个当日额度读数
+ * （见 TIERS 的注释与 docs/monkeycode-model-billing.md §2/U5）。
  */
 const TIER_ORDER = Object.freeze({ basic: 0, pro: 1, ultra: 2 })
 
+/** 档位前缀。`baseOf()` 去掉它之后就是「同一个模型」的判据。 */
+const TIER_PREFIX = /^monkeycode-(basic|pro|ultra)\//
+
+/** 逃生阀：设成 `1` 就不隐藏无前缀孪生（仍保留档位权限过滤）。 */
+const CREDIT_TWIN_OPT_OUT = "MAGPIE_MONKEYCODE_SHOW_CREDIT_TWINS"
+
+/** 取档位名；无前缀（走积分）返回 undefined。 */
+function tierOf(apiId) {
+  const hit = TIER_PREFIX.exec(String(apiId ?? ""))
+  return hit === null ? undefined : hit[1]
+}
+
+/** 取 base 名：去掉档位前缀后的剩余串，用来判断「是不是同一个模型」。 */
+function baseOf(apiId) {
+  return String(apiId ?? "").replace(TIER_PREFIX, "")
+}
+
 /**
- * 按账号档位过滤目录条目。
+ * 隐藏「积分孪生」：同一个 base 既有档位条目又有无前缀条目时，只留档位那条。
+ *
+ * 为什么以档位条目为准：日额度耗尽后三档**默认自动转扣积分**（平台开关，见
+ * docs/monkeycode-model-billing.md 的 A1/A2/A7），档位条目是无前缀条目的能力超集；
+ * 无前缀那条只是「直接扣积分」的重复入口，留着只会让用户在同名模型里二选一。
+ *
+ * 三条边界：
+ * - 组内**没有**档位条目（无前缀那条是这条模型唯一入口）⇒ 原样保留；
+ * - 组内有多条档位条目（档位未知未收窄 / 平台重复下发）⇒ 只留**最高档**；
+ * - 顺序要求：必须在 `filterByTier()` 收窄**之后**调用 —— 先按 base 去重会把
+ *   「basic 账号只有 ultra 孪生 + 无前缀」这种情形里唯一能用的那条也删掉。
+ *
+ * @param {Array<{ apiId?: string }>} models
+ * @returns {Array<object>} 顺序保持不变
+ */
+function hideCreditTwins(models) {
+  if (process.env[CREDIT_TWIN_OPT_OUT] === "1") return models
+  const groups = new Map()
+  for (const model of models) {
+    const base = baseOf(model?.apiId)
+    const list = groups.get(base)
+    if (list === undefined) groups.set(base, [model])
+    else list.push(model)
+  }
+  const drop = new Set()
+  for (const list of groups.values()) {
+    if (list.length < 2) continue
+    const tiered = list.filter((model) => tierOf(model?.apiId) !== undefined)
+    if (tiered.length === 0) continue
+    // 保留档位最高的那条；同档位重复下发时取先出现的那条（平台按权重排过）。
+    const best = tiered.reduce((a, b) => (TIER_ORDER[tierOf(b.apiId)] > TIER_ORDER[tierOf(a.apiId)] ? b : a))
+    for (const model of list) if (model !== best) drop.add(model)
+  }
+  return drop.size === 0 ? models : models.filter((model) => !drop.has(model))
+}
+
+/**
+ * 按账号档位过滤目录条目，并隐藏积分孪生。
  *
  * 规则：无前缀（按积分计费）与 `monkeycode-basic/` 谁都能用；`monkeycode-pro/`
  * 要 pro 及以上；`monkeycode-ultra/` 只有 ultra。
  *
  * 档位未知（拿不到订阅、也没有可信的每日额度）时**原样返回** —— 不做无根据的
- * 收窄；过滤后为空也原样返回（宁可多列，也不把列表清空）。
+ * 收窄，也**不做去重**（哪条是「本档位」无从判断，误删会少一条真能用的模型）；
+ * 过滤后为空也原样返回（宁可多列，也不把列表清空）。
  *
  * @param {Array<{ apiId?: string }>} models
  * @param {string} [tier] `basic` | `pro` | `ultra`
@@ -328,11 +409,10 @@ export function filterByTier(models, tier) {
   const cap = TIER_ORDER[tier]
   if (cap === undefined) return models
   const kept = models.filter((model) => {
-    const hit = /^monkeycode-(basic|pro|ultra)\//.exec(String(model?.apiId ?? ""))
-    if (hit === null) return true
-    return TIER_ORDER[hit[1]] <= cap
+    const hit = tierOf(model?.apiId)
+    return hit === undefined || TIER_ORDER[hit] <= cap
   })
-  return kept.length > 0 ? kept : models
+  return hideCreditTwins(kept.length > 0 ? kept : models)
 }
 
 /**

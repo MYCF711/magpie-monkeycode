@@ -7,7 +7,7 @@
 //   头 `x-api-key` + `anthropic-version: 2023-06-01`，返回标准 Anthropic SSE；
 // - 模型目录有远端：`GET …/api/anthropic/v1/models` → `{ data: [{ id, type, display_name, created_at }] }`；
 // - 凭据是**长期静态 Key**（`sk-` + 64 位，共 67 字符），没有 refresh 端点、没有过期时间；
-// - 与 MonkeyCode 平台完全独立：独立账号、独立凭据、按量计费、**无每日额度 / 无签到**；
+// - 与 MonkeyCode 平台完全独立：独立账号、独立凭据、按量计费、**无每日 token 额度**（有每日积分，需领取）；
 // - 积分余额与 API Key 列表都在**控制台**（`baizhi.cloud`），只认网页 Cookie，`x-api-key` 打过去 401；
 // - 推理 Key 来自大模型商店的 console 接口（`ai-models.app.baizhi.cloud/api/console/api-keys`）。
 //

@@ -7,7 +7,7 @@
     "baizhi"
   ],
   "summary": {
-    "en": "Signs in to MonkeyCode (China and international) and BaiZhiCloud, and serves their models to every agent magpie runs: browser sign-in or API key, gateway request signing, quota and credits, daily check-in.",
-    "zh": "签入 MonkeyCode 国内站、国际站与百智云，把它们的模型提供给 magpie 里的每个 agent：浏览器登录或 API Key、网关请求签名、额度与积分、每日签到。"
+    "en": "Signs in to MonkeyCode (China and international) and BaiZhiCloud and serves their models to every agent magpie runs. After a successful BaiZhiCloud desktop import or browser sign-in it provisions the China-side MonkeyCode account in the background — no second click; a background failure never fails the BaiZhiCloud sign-in; deduplicated by uid, verified by read-back, and nothing is written when the auth store cannot be read. BaiZhiCloud keeps only those two sign-in routes, the China site accepts only your BaiZhiCloud identity, and the international site stays independent (API key, password, desktop import, browser). Optional invite codes for both sites, gateway request signing, and per-model “daily quota / credits” billing labels. MonkeyCode supports daily check-in; BaiZhiCloud uses pay-as-you-go credits and has no daily token pool.",
+    "zh": "签入 MonkeyCode 国内站、国际站与百智云，把它们的模型提供给 magpie 里的每个 agent。「从本机客户端导入」或「浏览器登录」成功后，会在后台用同一个百智云身份自动开通并写入国内 MonkeyCode —— 不用点第二次；后台失败不影响百智云登录；按 uid 去重、写入后回读确认、账号库读不出来就一个字节都不写。百智云只保留这两条登录路，国内站只认百智云身份，国际站保持独立（API Key / 账号密码 / 本机导入 / 浏览器）。支持双方的邀请码、网关请求签名，以及按模型标注「每日额度 / 积分」的计费口径。MonkeyCode 两站支持每日签到；百智云按量扣积分，没有每日 token 池。"
   }
 }
