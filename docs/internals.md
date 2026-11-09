@@ -111,6 +111,17 @@ signature = "v1=" + hex(HMAC-SHA256(signing_secret, prompt))
 `baizhi` 那两格是**两个不同的邀请码**（百智云的 `invite_code` / 国内站的 `inviter_id`），不是两个新按钮 ——
 `ask()` 按顺序问，见 §3.4。`monkeycode` 那条手动入口只有一格（国内站的码）。
 
+⚠ **两家的码形态不同，别混**：
+
+| 站点 | 参数 | 形态 | 来源 |
+|---|---|---|---|
+| 百智云 | `invite_code` | **8 位字母数字**（服务端硬校验 `invite_code length must be 8`） | `GET /api/v1/user/invite-code` 的 `data.invite_code` |
+| 国内站 | `inviter_id` | 邀请人 **user.id**（uuid） | 官方分享链接 `?ic=<user.id>` |
+
+2026-11-09 真机事故就是混了这两者：把百智云的 15 位 user id 当 `invite_code` 拼进
+`/sign-in`，注册页弹红条、登录被打断。现在取不到合法 8 位码就**不带**（宁可不邀请）。
+
+
 回归判据：`MAGPIE_PLUGIN_DISABLE_BROWSER=1 node --test tests/multi-provider.test.mjs` ——
 登录面形状、`authorize()` 立刻返回、域隔离、邀请码语义都在那里锁着。
 
