@@ -22,7 +22,7 @@ import { createServer } from "node:net"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { findBrowser } from "./browser-login.mjs"
+import { findBrowser, selectPageTarget } from "./browser-login.mjs"
 
 /** 默认等用户登录的上限（毫秒）。 */
 export const BROWSER_LOGIN_TIMEOUT_MS = 240_000
@@ -47,8 +47,57 @@ async function getJson(url, timeoutMs = 1_500) {
   return response.json()
 }
 
-function cdpSend(ws, id, method, params = {}) {
+/** 建连也有 finish 语义：close-only、构造器异常和超时都不能把登录流程永久挂住。 */
+function connectWebSocket(pageWsUrl, { timeoutMs = 10_000, create = (url) => new WebSocket(url) } = {}) {
   return new Promise((resolve, reject) => {
+    let ws
+    let settled = false
+    const cleanup = () => {
+      clearTimeout(timer)
+      ws?.removeEventListener("open", onOpen)
+      ws?.removeEventListener("close", onClose)
+      ws?.removeEventListener("error", onError)
+    }
+    const finish = (callback, value) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      callback(value)
+    }
+    const fail = (error) => {
+      finish(reject, error)
+      try { ws?.close() } catch {}
+    }
+    const onOpen = () => finish(resolve, ws)
+    const onClose = () => fail(new Error("CDP WebSocket 握手期间关闭"))
+    const onError = () => fail(new Error("CDP WebSocket 连不上"))
+    const timer = setTimeout(() => fail(new Error("CDP WebSocket 握手超时")), timeoutMs)
+    try {
+      ws = create(pageWsUrl)
+      ws.addEventListener("open", onOpen)
+      ws.addEventListener("close", onClose)
+      ws.addEventListener("error", onError)
+    } catch (error) {
+      fail(error)
+    }
+  })
+}
+
+function cdpSend(ws, id, method, params = {}, timeoutMs = 10_000) {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const cleanup = () => {
+      clearTimeout(timer)
+      ws.removeEventListener("message", onMessage)
+      ws.removeEventListener("close", onClose)
+      ws.removeEventListener("error", onError)
+    }
+    const finish = (callback, value) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      callback(value)
+    }
     const onMessage = (event) => {
       let message
       try {
@@ -57,26 +106,31 @@ function cdpSend(ws, id, method, params = {}) {
         return
       }
       if (message.id !== id) return
-      ws.removeEventListener("message", onMessage)
-      if (message.error) reject(new Error(message.error.message || "CDP error"))
-      else resolve(message.result)
+      if (message.error) finish(reject, new Error(message.error.message || "CDP error"))
+      else finish(resolve, message.result)
     }
+    const onClose = () => finish(reject, new Error(`CDP WebSocket 已关闭（${method}）`))
+    const onError = () => finish(reject, new Error(`CDP WebSocket 错误（${method}）`))
+    const timer = setTimeout(() => finish(reject, new Error(`CDP 命令超时（${method}）`)), timeoutMs)
     ws.addEventListener("message", onMessage)
-    ws.send(JSON.stringify({ id, method, params }))
+    ws.addEventListener("close", onClose)
+    ws.addEventListener("error", onError)
+    try {
+      ws.send(JSON.stringify({ id, method, params }))
+    } catch (error) {
+      finish(reject, error)
+    }
   })
 }
 
 async function cdpCookies(pageWsUrl) {
-  const ws = new WebSocket(pageWsUrl)
-  await new Promise((resolve, reject) => {
-    ws.addEventListener("open", resolve, { once: true })
-    ws.addEventListener("error", () => reject(new Error("CDP WebSocket 连不上")), { once: true })
-  })
+  let ws
   try {
+    ws = await connectWebSocket(pageWsUrl)
     return await cookiesOn(ws)
   } finally {
     try {
-      ws.close()
+      ws?.close()
     } catch {}
   }
 }
@@ -114,6 +168,44 @@ async function cookiesOn(ws) {
   return result?.cookies ?? []
 }
 
+/** 原 target 有 id 时，id 消失就是目标被回收；同源新 target 不能把它伪装成普通断线。 */
+function diagnosePageTargets(pages, url, pageTargetId) {
+  if (pageTargetId) {
+    const sameTarget = (pages ?? []).some((p) => p?.id === pageTargetId && p.type === "page")
+    return sameTarget ? "detached" : "target-gone"
+  }
+  return selectPageTarget(pages, url, { fallback: false }) ? "detached" : "target-gone"
+}
+
+/** browserLogin 与 startBrowserLogin 共用的断开检查；命令失败时即使 WS 仍 OPEN 也可强制查目标。 */
+async function assertBrowserConnected(handle, { force = false } = {}) {
+  const open = handle.ws.readyState === 1
+  if (open && !force) return
+  const reason = await handle.diagnoseDisconnect()
+  // 目标仍在且 WS 仍 OPEN：这次命令失败可以是瞬时的，让外层继续轮询。
+  if (reason === "detached" && open) return
+  if (reason === "target-gone") {
+    throw new Error("受控浏览器中的登录页面目标消失了（可能被浏览器回收；窗口不一定被关闭）")
+  }
+  if (reason === "detached") {
+    throw new Error("受控浏览器的 CDP 连接断开了，但登录页面仍在；请重试浏览器登录")
+  }
+  if (reason === "browser-closed") {
+    throw new Error("受控浏览器进程已退出（窗口可能已关闭，或被系统拦截）")
+  }
+  throw new Error("受控浏览器的 CDP 调试端口不可达（窗口可能仍在运行，也可能是连接被拦截）")
+}
+
+/** 读 cookie 失败也查一次 target：夸克可能在 WS 仍 OPEN 时销毁页面目标。 */
+async function loginCookies(handle) {
+  try {
+    return await cookiesOn(handle.ws)
+  } catch {
+    await assertBrowserConnected(handle, { force: true })
+    return []
+  }
+}
+
 /**
  * 持久 profile 目录（登录态跨次保留）。
  *
@@ -133,13 +225,13 @@ export function profileDirFor(name) {
  *
  * @returns {Promise<{ ws: WebSocket, close: () => void, profileDir: string, persistent: boolean }>}
  */
-export async function openControlledBrowser({ url = "about:blank", profileDir, headless = false, browser = findBrowser() } = {}) {
+export async function openControlledBrowser({ url = "about:blank", profileDir, headless = false, browser = findBrowser(), spawnImpl = spawn } = {}) {
   if (!browser?.path) throw new Error("没有可用的 Chromium 浏览器（Chrome / Edge / 国产 Chromium 都行）")
   const persistent = profileDir !== undefined
   const profile = persistent ? profileDir : mkdtempSync(join(tmpdir(), "magpie-session-login-"))
   if (persistent) mkdirSync(profile, { recursive: true })
   const port = await freePort()
-  const child = spawn(browser.path, [
+  const child = spawnImpl(browser.path, [
     `--remote-debugging-port=${port}`,
     `--user-data-dir=${profile}`,
     "--no-first-run",
@@ -149,6 +241,14 @@ export async function openControlledBrowser({ url = "about:blank", profileDir, h
     ...(headless ? ["--headless=new"] : []),
     url,
   ], { stdio: "ignore", windowsHide: headless })
+  let childExited = false
+  let spawnError = null
+  child.once("exit", () => {
+    childExited = true
+  })
+  child.once("error", (error) => {
+    spawnError = error
+  })
 
   const close = () => {
     try {
@@ -162,31 +262,66 @@ export async function openControlledBrowser({ url = "about:blank", profileDir, h
     }
   }
 
+  const assertProcessRunning = () => {
+    if (spawnError) {
+      close()
+      throw new Error(`受控浏览器启动失败：${spawnError.message}`)
+    }
+    if (childExited) {
+      close()
+      throw new Error("受控浏览器进程已退出（可能被安全软件拦截）")
+    }
+  }
+
   const deadline = Date.now() + 60_000
   let pageWs = ""
+  let pageTargetId = ""
   while (Date.now() < deadline && pageWs.length === 0) {
+    assertProcessRunning()
     await new Promise((resolve) => setTimeout(resolve, 300))
     try {
       const pages = await getJson(`http://127.0.0.1:${port}/json/list`)
-      pageWs = pages.find((page) => page.type === "page" && page.webSocketDebuggerUrl)?.webSocketDebuggerUrl ?? ""
+      // 必须按登录 URL 的 origin 选目标：夸克等浏览器会把内部页插到 `/json/list` 首位。
+      const target = selectPageTarget(pages, url)
+      pageWs = target?.webSocketDebuggerUrl ?? ""
+      pageTargetId = target?.id ?? ""
     } catch {}
   }
   if (pageWs.length === 0) {
     close()
     throw new Error("受控浏览器没有打开调试端口（浏览器可能吞掉了 --remote-debugging-port）")
   }
-  const ws = new WebSocket(pageWs)
-  await new Promise((resolve, reject) => {
-    ws.addEventListener("open", resolve, { once: true })
-    ws.addEventListener("error", () => reject(new Error("CDP WebSocket 连不上")), { once: true })
-  })
+  let ws
+  try {
+    // 构造器也在 connectWebSocket 的 try 内；任何建连失败都回收子进程与临时 profile。
+    ws = await connectWebSocket(pageWs)
+  } catch (error) {
+    close()
+    throw error
+  }
   // 启动参数里的 URL 不一定被采纳（尤其 headless）：连上后显式导航一次，
   // 免得用户对着 about:blank 不知道该干什么。
   if (url !== "about:blank") {
     await cdpSend(ws, 0, "Page.enable").catch(() => {})
     await cdpSend(ws, -1, "Page.navigate", { url }).catch(() => {})
   }
-  return { ws, close, profileDir: profile, persistent }
+
+  /**
+   * WS 断开后查一次目标列表，区分「页面目标被回收」与「整个浏览器/调试端口消失」。
+   * 只在失败路径调用，不给正常轮询增加额外请求。
+   */
+  const diagnoseDisconnect = async () => {
+    if (childExited) return "browser-closed"
+    try {
+      const pages = await getJson(`http://127.0.0.1:${port}/json/list`, 1000)
+      return diagnosePageTargets(pages, url, pageTargetId)
+    } catch {
+      // 单次超时 / JSON 错误不能证明窗口被关；只有进程 exit 才归到 browser-closed。
+      return childExited ? "browser-closed" : "browser-unreachable"
+    }
+  }
+
+  return { ws, close, profileDir: profile, persistent, diagnoseDisconnect }
 }
 
 /**
@@ -249,10 +384,11 @@ export async function browserLogin({
   try {
     while (Date.now() < deadline) {
       if (signal?.aborted) throw new Error("登录已取消")
+      await assertBrowserConnected(handle)
       if (typeof onPoll === "string" && onPoll.length > 0) {
         await cdpSend(handle.ws, tick++, "Runtime.evaluate", { expression: onPoll, returnByValue: true }).catch(() => {})
       }
-      const cookies = await cookiesOn(handle.ws).catch(() => [])
+      const cookies = await loginCookies(handle)
       const cookie = sessionCookieOf(cookies, names, cookieDomains)
       // 没有会话就继续等；有会话但换不到 Key（匿名会话）也继续等 ——
       // 用户可能只是还没在窗口里点完登录。
@@ -301,9 +437,8 @@ export async function startBrowserLogin({
 }) {
   const names = Array.isArray(cookieNames) && cookieNames.length > 0 ? cookieNames : [cookieName]
   const handle = await openControlledBrowser({ url, profileDir, browser })
-  // 存活检查：浏览器可能因为 profile 被占用 / 被策略拦掉而**立刻退出**，
-  // 这时 CDP 端口谁也连不上，早点报错比让用户对着空面板等 4 分钟强。
-  const closed = () => handle.ws.readyState !== 1
+  // 存活检查：区分页面 target 被回收、CDP 断开、进程退出与单纯端口不可达，
+  // 不再把所有 readyState 非 OPEN 都误报成「用户关了窗口」。
   return {
     close: handle.close,
     async wait() {
@@ -312,11 +447,11 @@ export async function startBrowserLogin({
       try {
         while (Date.now() < deadline) {
           if (signal?.aborted) throw new Error("登录已取消")
-          if (closed()) throw new Error("受控浏览器窗口被关掉了（或被系统拦下没能启动）")
+          await assertBrowserConnected(handle)
           if (typeof onPoll === "string" && onPoll.length > 0) {
             await cdpSend(handle.ws, pollId++, "Runtime.evaluate", { expression: onPoll, returnByValue: true }).catch(() => {})
           }
-          const cookies = await cookiesOn(handle.ws).catch(() => [])
+          const cookies = await loginCookies(handle)
           const cookie = sessionCookieOf(cookies, names, cookieDomains)
           if (cookie !== undefined && await accept(cookie)) return { cookie, browser: browser.name }
           await new Promise((resolve) => setTimeout(resolve, BROWSER_LOGIN_POLL_MS))
@@ -329,4 +464,4 @@ export async function startBrowserLogin({
   }
 }
 
-export const _internal = { cdpCookies, freePort, sessionCookieOf, cookiesOn }
+export const _internal = { cdpCookies, cdpSend, connectWebSocket, freePort, sessionCookieOf, cookiesOn, assertBrowserConnected, diagnosePageTargets, loginCookies }
