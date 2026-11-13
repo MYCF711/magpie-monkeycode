@@ -247,8 +247,13 @@ function credentialOf(auth) {
   return isUsableCredential(credential) ? credential : undefined
 }
 
-/** 读一次额度与订阅，拼成 magpie 的 usage 形状。 */
-async function readUsage(site, credential, fetchImpl) {
+/** 读一次额度与订阅，拼成 magpie 的 usage 形状。
+ *
+ * `options.now` 只是给单测冻时间用的透传口（「今日消耗」按本地日历日算，
+ * 不注入就只能拿真时钟比 —— 固定日期的 fixture 一旦过了那一天就恒为 0，
+ * 而这两个用例又会以「读数坏了」的样子红掉）。生产路径不传，行为与以前一致。
+ */
+async function readUsage(site, credential, fetchImpl, { now } = {}) {
   const cookie = cookieOf(credential, site.sessionCookie)
   if (cookie === undefined) {
     return {
@@ -263,20 +268,39 @@ async function readUsage(site, credential, fetchImpl) {
   // 两者都不会抛；今日消耗再兜一层 ok:false，失败就当没有这条窗口。
   const [plan, todaySpend] = await Promise.all([
     fetchPlan(cookie, site, { fetchImpl }),
-    fetchTodaySpend(cookie, site, { fetchImpl }).catch(() => ({ ok: false })),
+    fetchTodaySpend(cookie, site, { fetchImpl, ...(now === undefined ? {} : { now }) }).catch(() => ({ ok: false })),
   ])
 
   const windows = []
   // 每日额度：数量型窗口。span = 一天（上游不下发重置时刻，编一个 resetsAt 就是编造）。
   // 只有上限与剩余都有才画（缺剩余时把 0 当剩余会让用户以为今天已用光）。
+  //
+  // ⚠ 2026-11-11 起平台取消**基础用户**的每日赠送额度：Basic 账号的钱包把
+  // `daily_token_limit` 与 `daily_token_balance` **都下发 0**（官方公告
+  // https://monkeycode.docs.baizhi.cloud/node/01a012e5-d949-76db-96d0-b9cf63283026，
+  // 2026-11-13 在 6 个 Basic 账号上实测确认，国内站与国际站都已生效）。
+  // 而 `usageWindow` 的数量型硬要求 `limit > 0` —— 拿 0 去建窗口会抛 QuotaShapeError，
+  // 把**整张额度卡片**（连积分余额那条）一起弄坏，这个号在路由里也失去额度读数。
+  // 所以 `limit = 0` 时退化成文本型（`specs/quota.md` §10.2 的原话），说清「平台没发」，
+  // 而不是把这条悄悄抹掉 —— 那条不见了，用户会以为插件坏了。
+  // pro / ultra / 期间版账号按公告仍有日额度，`limit > 0` 走原路，不受影响。
   if (wallet.dailyTokenLimit !== undefined && wallet.dailyTokenBalance !== undefined) {
-    windows.push(usageWindow({
-      name: "每日额度",
-      amount: Math.max(0, wallet.dailyTokenLimit - wallet.dailyTokenBalance),
-      limit: wallet.dailyTokenLimit,
-      unit: "计费 token",
-      span: 86_400,
-    }))
+    if (wallet.dailyTokenLimit > 0) {
+      windows.push(usageWindow({
+        name: "每日额度",
+        amount: Math.max(0, wallet.dailyTokenLimit - wallet.dailyTokenBalance),
+        limit: wallet.dailyTokenLimit,
+        unit: "计费 token",
+        span: 86_400,
+      }))
+    } else {
+      // textOnly 的窗口路由不计入（它本来就没有占比）；可路由的那条是下面的「积分余额」。
+      windows.push(usageWindow({
+        name: "每日额度",
+        textOnly: true,
+        display: "平台未发放（基础用户自 2026-11-11 起无每日赠送额度）",
+      }))
+    }
   }
   // 积分是钱包型：只给余额，没有上限（上游不给总额，给分母就是假占比）。
   // 真机见过负余额（-8.191）—— 负数不能直接当进度条读，改成 0 + 明文字。

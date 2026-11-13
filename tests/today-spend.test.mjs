@@ -230,7 +230,7 @@ test("readUsage：成功时在最后追加 textOnly 的「今日消耗」，没�
   const { fetchImpl } = platformFetch({
     pages: [pageBody([record(TODAY + 3600, 98_914, "model_consumption")])],
   })
-  const usage = await readUsage(site, credential, fetchImpl)
+  const usage = await readUsage(site, credential, fetchImpl, { now })
   assert.equal(usage.error, undefined)
   const today = usage.windows.find((w) => w.name === "今日消耗")
   assert.ok(today, "读成功就必须有「今日消耗」")
@@ -251,10 +251,10 @@ test("readUsage：数字格式与百智云一致（98.79 积分 / 36 次调用�
     ...Array.from({ length: 35 }, (_, index) => record(TODAY + 100 + index, 2_744)),
     record(TODAY + 200, 2_750),
   ]
-  const ok = await readUsage(site, credential, platformFetch({ pages: [pageBody(transactions)] }).fetchImpl)
+  const ok = await readUsage(site, credential, platformFetch({ pages: [pageBody(transactions)] }).fetchImpl, { now })
   assert.equal(ok.windows.find((w) => w.name === "今日消耗").display, "98.79 积分 / 36 次调用")
 
-  const zero = await readUsage(site, credential, platformFetch({ pages: [pageBody([])] }).fetchImpl)
+  const zero = await readUsage(site, credential, platformFetch({ pages: [pageBody([])] }).fetchImpl, { now })
   // 额度内不产生扣费流水：说清楚「没扣」，而不是「0 积分」那种看着像读数坏了的样子。
   assert.equal(zero.windows.find((w) => w.name === "今日消耗").display, "今日未扣积分（额度内）")
 })

@@ -166,6 +166,47 @@ test("额度：钱包型只给余额，数量型给 amount/limit，未配 cookie
   assert.equal(noCookie.windows.length, 0)
 })
 
+test("额度：平台取消基础用户日额度（daily_token_limit = 0）不抛错，退化成文本窗口", async () => {
+  const plugin = await makePlugin(site)({ client: {} })
+  const auth = { type: "api", key: JSON.stringify({ ...credential, session_cookie: "sess", user_id: "u0" }) }
+
+  const original = globalThis.fetch
+  globalThis.fetch = async (url) => {
+    const text = String(url)
+    if (text.endsWith("/api/v1/users/wallet")) {
+      // 2026-11-11 起基础用户不再有每日赠送额度：两个字段都下发 0（实测形态）。
+      return Response.json({ code: 0, data: { balance: 37949, daily_token_balance: 0, daily_token_limit: 0 } })
+    }
+    if (text.endsWith("/api/v1/users/subscription")) {
+      return Response.json({ code: 0, data: { plan: "basic" } })
+    }
+    throw new Error(`unexpected ${text}`)
+  }
+  try {
+    const usage = await plugin.auth.usage(async () => auth)
+    // 判据：limit=0 不能把整张卡片变成错误态（原先抛 QuotaShapeError，连积分那条也一起没了）。
+    assert.equal(usage.error, undefined)
+    assert.equal(usage.plan, "MonkeyCode Basic")
+
+    const daily = usage.windows.find((w) => w.name === "每日额度")
+    assert.ok(daily, "额度那条要在 —— 悄悄抹掉用户会以为插件坏了")
+    assert.equal(daily.textOnly, true, "limit=0 时不能建数量型窗口（usageWindow 硬要求 limit > 0）")
+    assert.equal(daily.limit, undefined)
+    assert.match(daily.display, /基础用户/)
+
+    const credit = usage.windows.find((w) => w.name === "积分余额")
+    assert.equal(credit.balance, 37.949, "积分余额照常给（钱包单位是千分之一积分）")
+
+    // 至少一条可路由窗口：钱包型的积分窗口参与路由，这个号不能在智能路由里消失。
+    assert.ok(
+      usage.windows.some((w) => w.aside !== true && (w.used !== undefined || w.balance !== undefined)),
+      "必须留一条可路由窗口",
+    )
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
 // ── loader ───────────────────────────────────────────────────────────
 
 test("loader：签名基于最终 body，且不把 SDK 的 x-api-key 带出去", async () => {
