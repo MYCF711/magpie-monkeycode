@@ -58,13 +58,12 @@ test("fetchCatalog：平台没有可用模型时报失败，不返回空表", as
   assert.equal(result.ok, false)
 })
 
-test("prettyModelName：档位一律标「每日额度」，无前缀才标「积分」", async () => {
+test("prettyModelName：basic 标「免费」，pro / ultra 标「每日额度」，无前缀标「积分」", async () => {
   const { entryOf, prettyModelName } = await import("../src/monkeycode/catalog.mjs")
-  // 依据 docs/monkeycode-model-billing.md §4.5：
-  // - 三档（basic/pro/ultra）吃的都是同一个「当日免费额度」，耗尽后默认自动转扣积分
-  //   （官方前端「额度耗尽后消耗积分」开关，A1/A2/A5）—— 名字里该说的是「这条吃不吃日额度」；
-  //   档位名（基础/专业/旗舰）由账号自己的订阅决定，写进名字反而每次都要解释。
-  assert.equal(prettyModelName("monkeycode-basic/glm-5.3-flash"), "GLM-5.3-Flash · 每日额度")
+  // 2026-11-13 平台口径变更：基础会员「永久免费、不赠送额度」
+  // （官方前端 `dailyQuotaBasic: "不赠送额度"`，模型选择器里 basic 模型标「免费使用」），
+  // 所以 basic 前缀不能再标「每日额度」；只有 pro / ultra 吃日额度。
+  assert.equal(prettyModelName("monkeycode-basic/glm-5.3-flash"), "GLM-5.3-Flash · 免费")
   assert.equal(prettyModelName("monkeycode-pro/hy3"), "HY3 · 每日额度")
   assert.equal(prettyModelName("monkeycode-ultra/qwen3.7-max"), "Qwen3.7-Max · 每日额度")
   // 无前缀 = 官方「付费模型 / 消耗积分使用」分组，直接扣积分（同上 A7）。
@@ -74,7 +73,7 @@ test("prettyModelName：档位一律标「每日额度」，无前缀才标「�
   assert.equal(prettyModelName(""), "")
   // 缓存条目上的 displayName 是同一套口径（读缓存时算出来的那个字段，用户看到的就是它）。
   const entry = entryOf({ id: "u1", model: "monkeycode-basic/deepseek-flash", interface_type: "anthropic" })
-  assert.equal(entry.displayName, "DeepSeek-Flash · 每日额度")
+  assert.equal(entry.displayName, "DeepSeek-Flash · 免费")
 })
 
 test("probeCatalog：只有 200 才算能用，403/异常一律不可用", async () => {
@@ -331,7 +330,7 @@ async function withCacheDir(fn) {
   }
 }
 
-test("readCatalog ⑤：旧缓存的「基础档/专业档/旗舰档」读出即重算成「每日额度」，且只读不改文件", async () => {
+test("readCatalog ⑤：旧缓存的「基础档/专业档/旗舰档」读出即重算成「免费 / 每日额度」，且只读不改文件", async () => {
   const { readCatalog } = await import("../src/monkeycode/catalog.mjs")
   await withCacheDir(({ dir, models }) => {
     const file = join(dir, "monkeycode-models-monkeycode.json")
@@ -342,15 +341,15 @@ test("readCatalog ⑤：旧缓存的「基础档/专业档/旗舰档」读出即
     assert.equal(catalog.fetchedAt, 1)
     assert.equal(catalog.tier, "basic", "落盘的档位要带回来（runtime 靠它收窄）")
 
-    // 三个档位一律「每日额度」；无前缀继续「积分」。
+    // basic 前缀 = 「免费」，pro / ultra 前缀 = 「每日额度」；无前缀继续「积分」。
     assert.deepEqual(
       catalog.models.map((model) => model.displayName),
       [
-        "GLM-5.3-Flash · 每日额度",
+        "GLM-5.3-Flash · 免费",
         "HY3 · 每日额度",
         "Qwen3.7-Max · 每日额度",
         "DeepSeek-Flash · 积分",
-        "DeepSeek-Flash · 每日额度",
+        "DeepSeek-Flash · 免费",
       ],
     )
     // 除了 displayName，其它字段一个字都不许动（uuid 还要用来区分记录）。
@@ -359,7 +358,7 @@ test("readCatalog ⑤：旧缓存的「基础档/专业档/旗舰档」读出即
       models.map((model) => ({
         ...model,
         displayName: model.displayName
-          .replace(/ · 基础档$/, " · 每日额度")
+          .replace(/ · 基础档$/, " · 免费")
           .replace(/ · 专业档$/, " · 每日额度")
           .replace(/ · 旗舰档$/, " · 每日额度"),
       })),
@@ -381,7 +380,7 @@ test("readCatalog + filterByTier：重算后的目录照常去重（积分孪生
     const narrowed = filterByTier(catalog.models, catalog.tier)
     assert.deepEqual(idsOf(narrowed), ["monkeycode-basic-glm-5-3-flash", "monkeycode-basic-deepseek-flash"])
     // 留下来的那条也必须是重算过的名字（否则「去重对了、名字还是旧的」会漏网）。
-    assert.equal(narrowed[1].displayName, "DeepSeek-Flash · 每日额度")
+    assert.equal(narrowed[1].displayName, "DeepSeek-Flash · 免费")
 
     // 逃生阀：只关去重，权限过滤照旧（basic 账号仍然看不到 pro / ultra）。
     const previousOptOut = process.env.MAGPIE_MONKEYCODE_SHOW_CREDIT_TWINS
@@ -394,7 +393,7 @@ test("readCatalog + filterByTier：重算后的目录照常去重（积分孪生
       )
       // 逃生阀下重算照样生效（改名与去重是两件事）。
       assert.equal(escaped.find((model) => model.id === "deepseek-flash").displayName, "DeepSeek-Flash · 积分")
-      assert.equal(escaped.find((model) => model.id === "monkeycode-basic-deepseek-flash").displayName, "DeepSeek-Flash · 每日额度")
+      assert.equal(escaped.find((model) => model.id === "monkeycode-basic-deepseek-flash").displayName, "DeepSeek-Flash · 免费")
     } finally {
       if (previousOptOut === undefined) delete process.env.MAGPIE_MONKEYCODE_SHOW_CREDIT_TWINS
       else process.env.MAGPIE_MONKEYCODE_SHOW_CREDIT_TWINS = previousOptOut

@@ -166,6 +166,33 @@ test("额度：钱包型只给余额，数量型给 amount/limit，未配 cookie
   assert.equal(noCookie.windows.length, 0)
 })
 
+test("额度：每日额度上限为 0（按积分计费）时不画这条窗口，也不许把整张卡片变成错误", async () => {
+  const plugin = await makePlugin(site)({ client: {} })
+  const auth = { type: "api", key: JSON.stringify({ ...credential, session_cookie: "sess", user_id: "u1" }) }
+
+  const original = globalThis.fetch
+  globalThis.fetch = async (url) => {
+    const text = String(url)
+    if (text.endsWith("/api/v1/users/wallet")) {
+      // 2026-11-13 真机：`enable_credit_consumption: true` 的 basic 账号恒为 0/0。
+      return Response.json({ code: 0, data: { balance: 20_400_000, daily_token_balance: 0, daily_token_limit: 0 } })
+    }
+    if (text.endsWith("/api/v1/users/subscription")) {
+      return Response.json({ code: 0, data: { plan: "basic" } })
+    }
+    throw new Error(`unexpected ${text}`)
+  }
+  try {
+    const usage = await plugin.auth.usage(async () => auth)
+    assert.equal(usage.error, undefined, "limit=0 不许冒成 usage.error")
+    assert.equal(usage.windows.some((w) => w.name === "每日额度"), false)
+    const credit = usage.windows.find((w) => w.name === "积分余额")
+    assert.equal(credit.balance, 20_400)
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
 // ── loader ───────────────────────────────────────────────────────────
 
 test("loader：签名基于最终 body，且不把 SDK 的 x-api-key 带出去", async () => {

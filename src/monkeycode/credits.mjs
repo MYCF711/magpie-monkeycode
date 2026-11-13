@@ -29,8 +29,15 @@ const MAX_POW_ATTEMPTS_TOTAL = 5_000_000
 /** 订阅档位只认这三个值，其余一律当「档位未知」（不猜）。 */
 export const PLAN_LABELS = Object.freeze({ basic: "Basic", pro: "Pro", ultra: "Ultra" })
 
-/** 每日额度的档位 → 计费 token 上限。 */
-export const PLAN_DAILY_LIMIT = Object.freeze({ basic: 10_000_000, pro: 100_000_000, ultra: 300_000_000 })
+/**
+ * 每日额度的档位 → 计费 token 上限。
+ *
+ * ⚠ 只有 pro / ultra 有日额度。2026-11-13 核实：平台把 basic 改成**永久免费、不赠送额度**
+ * （官方前端 `dailyQuotaBasic: "不赠送额度"`，`status: "unsupported"`），这类账号钱包里
+ * `daily_token_limit` / `daily_token_balance` 恒为 0。所以 0 **不能**反推成 basic ——
+ * basic 只认 `/users/subscription` 的 `plan` 字段。
+ */
+export const PLAN_DAILY_LIMIT = Object.freeze({ pro: 100_000_000, ultra: 300_000_000 })
 
 /**
  * 把用户可能粘贴的 cookie 串归一成可以直接放进 `Cookie` 头的值。
@@ -276,8 +283,9 @@ export async function fetchPlan(cookie, site, { fetchImpl = fetch, timeoutMs = 1
  *
  * 1. `GET /api/v1/users/subscription` 的 `plan`（明确的说法，最可信）；
  * 2. 该端点不给 plan 时（2026-11-04 国内站实测返回 undefined），用钱包的
- *    `daily_token_limit` 反推 —— 三档的日额度是固定的 10M / 100M / 300M，
- *    见 `PLAN_DAILY_LIMIT`。数值对不上就不猜。
+ *    `daily_token_limit` 反推 —— **只有 pro / ultra 能反推**（100M / 300M，见
+ *    `PLAN_DAILY_LIMIT`）。basic 现在没有日额度、钱包恒为 0，反推不出来，
+ *    只认第 1 条；数值对不上就不猜。
  *
  * 用途只有一个：把模型目录收窄到这个账号真能吃的额度池（`filterByTier`）。
  * 拿不到档位时**宁可不过滤**，也不要把列表清空。

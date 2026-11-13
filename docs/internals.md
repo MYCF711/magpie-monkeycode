@@ -390,7 +390,9 @@ oma_…                                             裸 token（缺密钥，请�
 
 三个细节：
 
-- **每日额度只有上限与剩余都有才画**。缺剩余时把 0 当剩余，会让用户以为今天已经用光。
+- **每日额度只有上限与剩余都有、且上限 > 0 才画**。缺剩余时把 0 当剩余，会让用户以为今天已经用光；
+  上限为 0 也不画——2026-11-13 起基础会员（免费档）钱包恒为 0/0，单独画一条 `limit: 0` 的窗口会被额度契约判不合法，
+  整张卡片会变成「暂时无法获取额度」（Pro / Ultra 仍是 100M / 300M 每天）。
 - **负余额**（真机见过 −8.191）不能直接喂进度条：改成 `balance: 0` + `display: "-8.191 积分（已透支）"`。
 - `signIn` 不因 cookie 401 写 `expired`：额度走 cookie、推理走 `oma_`，cookie 失效不影响发消息；标 expired 会把还能用的号判死。
 
@@ -457,11 +459,12 @@ POST /api/v1/users/wallet/checkin {captcha_token}
 
 ### 显示名：一眼看出按什么计费
 
-`prettyModelName()` 给每条模型加后缀（2026-11-09 起）：
+`prettyModelName()` 给每条模型加后缀（2026-11-09 起；2026-11-13 按新套餐调整 basic）：
 
 | 上游 `model` | 卡片显示名 |
 |---|---|
-| `monkeycode-basic/deepseek-flash`、`monkeycode-pro/…`、`monkeycode-ultra/…` | `DeepSeek-Flash · 每日额度`（三档同名，差别在权限） |
+| `monkeycode-basic/…` | `DeepSeek-Flash · 免费`（基础会员免费档，不赠送日额度） |
+| `monkeycode-pro/…`、`monkeycode-ultra/…` | `HY3 · 每日额度`（走 100M / 300M 的当日额度） |
 | `deepseek-flash`（无前缀） | `DeepSeek-Flash · 积分` |
 
 `readCatalog()` 读出时会用当前的 `prettyModelName(apiId ?? name)` 重算 `displayName` ——

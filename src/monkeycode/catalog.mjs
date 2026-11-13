@@ -69,9 +69,14 @@ const BRANDS = Object.freeze({
  * 平台前端也是这个口径（`ja()` 取前缀、`Im()` 按 plan 判权限）。
  * 日额度耗尽后三档一律默认自动转扣积分（平台「额度耗尽后消耗积分」开关，默认开），
  * 所以名字里该说的是「这条吃不吃日额度」，不是「基础/专业/旗舰」。
+ *
+ * ⚠ 2026-11-13 起 basic 前缀不再标「每日额度」：平台把基础会员改成**永久免费、不赠送
+ * 日额度**（官方前端 `dailyQuotaBasic: "不赠送额度"`、`status: "unsupported"`），
+ * 模型选择器里 basic 模型标的是「免费使用」。所以这条只说明「免费档可用」，
+ * 真正吃日额度的是 pro / ultra 前缀。
  */
 const TIERS = Object.freeze({
-  "monkeycode-basic": "每日额度",
+  "monkeycode-basic": "免费",
   "monkeycode-pro": "每日额度",
   "monkeycode-ultra": "每日额度",
 })

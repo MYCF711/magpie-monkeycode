@@ -144,9 +144,13 @@ featureValues:{ … dailyQuotaBasic:"每天 10M Token", dailyQuotaPro:"每天 10
 features:{ … dailyQuotaBasic:"每日额度：每天 10M Token", dailyQuotaPro:"每日额度：每天 100M Token", dailyQuotaUltra:"每日额度：每天 300M Token" … }
 ```
 
-与本地常量 **完全一致**：`src/monkeycode/credits.mjs:33`
-`PLAN_DAILY_LIMIT = { basic: 10_000_000, pro: 100_000_000, ultra: 300_000_000 }`。
-（`resolveTier()` 正是用这个等式反推档位，见 `credits.mjs:179-188` —— 这条交叉验证成立。）
+与本地常量 **完全一致**：`src/monkeycode/credits.mjs`
+
+> **2026-11-13 更正**：平台已改套餐 —— 基础会员（`basic`）变成永久免费、**不赠送每日额度**
+> （前端 `dailyQuotaBasic: "不赠送额度"`、`status: "unsupported"`；真机 6 个 basic 账号钱包
+> `daily_token_limit` / `daily_token_balance` 全部为 0），只有 Pro 100M / Ultra 300M 仍成立。
+> 因此 `PLAN_DAILY_LIMIT` 现在只有 `{ pro, ultra }`，`basic` 只能由 `/users/subscription`
+> 的 `plan` 字段判定，不能再靠日额度反推。A5 的原文保留为 11-09 的取证快照。
 
 ### A6 · 档位与权限**只由 `model` 字符串前缀决定**（平台前端自己就是这么判的）
 
@@ -357,9 +361,12 @@ function Xm(e){ const t=e?.remark?.trim(); return t ? jR(t) : Xc(e?.model) }    
 
 ### 4.5 显示名契约
 
-1. **档位条目**：`<品牌>-<版本> · 每日额度`（把 `基础档/专业档/旗舰档` 换掉：
-   用户要判断的是「这条吃不吃日额度」，档位名由账号自己决定，写进名字反而每次都要解释）。
-   若想保留档位信息，可写 `· 每日额度（基础）`，但**必须**先出现「每日额度」。
+> **2026-11-13 更新（覆盖下面第 1 条）**：`basic` 前缀改标 `· 免费` —— 基础会员不再赠送日额度，
+> 平台模型选择器里 basic 模型标的就是「免费使用」；`· 每日额度` 只留给 `monkeycode-pro` /
+> `monkeycode-ultra`。§4.4 表里的 `· 每日额度` 是 11-09 的取证快照，不再作为现行契约。
+
+1. ~~**档位条目**：`<品牌>-<版本> · 每日额度`~~ → 现在只有 pro / ultra 标 `· 每日额度`，
+   basic 标 `· 免费`。
 2. **无前缀条目**：`<品牌>-<版本> · 积分`（现状正确，不动）。
 3. **转积分的提示不要塞进模型名**：它是**账号级状态**，读
    `GET /api/v1/users/subscription` 的 `enable_credit_consumption`（A4），
