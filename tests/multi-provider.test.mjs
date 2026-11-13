@@ -1239,8 +1239,8 @@ const MONKEYCODE_FACTORIES = [
 ]
 
 const UPGRADE_NAMES = {
-  "monkeycode-basic-glm-5-3-flash": "GLM-5.3-Flash · 每日额度",
-  "monkeycode-basic-deepseek-flash": "DeepSeek-Flash · 每日额度",
+  "monkeycode-basic-glm-5-3-flash": "GLM-5.3-Flash · 免费",
+  "monkeycode-basic-deepseek-flash": "DeepSeek-Flash · 免费",
   "qwen3-6-plus": "Qwen3.6-Plus · 积分",
 }
 

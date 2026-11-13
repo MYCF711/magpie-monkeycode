@@ -269,7 +269,11 @@ async function readUsage(site, credential, fetchImpl) {
   const windows = []
   // 每日额度：数量型窗口。span = 一天（上游不下发重置时刻，编一个 resetsAt 就是编造）。
   // 只有上限与剩余都有才画（缺剩余时把 0 当剩余会让用户以为今天已用光）。
-  if (wallet.dailyTokenLimit !== undefined && wallet.dailyTokenBalance !== undefined) {
+  // ⚠ 上限为 0 也不能画：按积分计费的账号（`enable_credit_consumption: true`）钱包里
+  //   `daily_token_limit` / `daily_token_balance` 恒为 0，画出来会被 `usageWindow` 判
+  //   `limit > 0` 不成立而抛 QuotaShapeError —— 整张额度卡片变成「暂时无法获取额度」
+  //   （2026-11-13 真机：6 个 basic 账号全部 0/0）。没有每日额度就是没有这条窗口。
+  if (wallet.dailyTokenLimit !== undefined && wallet.dailyTokenLimit > 0 && wallet.dailyTokenBalance !== undefined) {
     windows.push(usageWindow({
       name: "每日额度",
       amount: Math.max(0, wallet.dailyTokenLimit - wallet.dailyTokenBalance),
