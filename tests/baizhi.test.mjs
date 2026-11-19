@@ -78,6 +78,33 @@ function claimChainHandler({ claimed = true, onClaim } = {}) {
   }
 }
 
+/**
+ * 「只有领取环节可变」的假链：钱包按顺序回 `wallets` 里的读数，challenge / redeem 恒成功，
+ * 领取 POST 回 `claimValue`。全部离线，`fetchImpl` 直接注入。
+ */
+function scriptedClaimFetch({ wallets, claimValue }) {
+  const calls = []
+  let walletIndex = 0
+  const fetchImpl = async (url, init = {}) => {
+    const path = new URL(url).pathname
+    calls.push(`${init.method ?? "GET"} ${path}`)
+    if (path === BAIZHI.walletBalancePath) {
+      const wallet = wallets[Math.min(walletIndex, wallets.length - 1)]
+      walletIndex += 1
+      return walletResponse(wallet)
+    }
+    if (path === "/api/v1/public/captcha/challenge") {
+      return Response.json({ code: 0, data: { token: "challenge-token", challenge: { c: 1, s: 1, d: 1 } } })
+    }
+    if (path === "/api/v1/public/captcha/redeem") {
+      return Response.json({ code: 0, data: { success: true, token: "captcha-token" } })
+    }
+    if (path === DAILY_CREDIT_PATH) return Response.json({ code: 0, data: claimValue })
+    throw new Error(`unexpected ${url}`)
+  }
+  return { fetchImpl, calls }
+}
+
 test("凭据：裸 sk- key 就能用，也接受带 session_cookie 的 JSON", () => {
   assert.deepEqual(parseCredential(KEY), { access_token: KEY })
   const withCookie = JSON.stringify({ access_token: KEY, session_cookie: "sess" })
@@ -255,13 +282,130 @@ test("每日积分：完整成功链的 endpoint / body / 顺序正确，到账�
   })
 })
 
-test("每日积分：领取响应 claimed=false 是并发幂等已领取，checkin 回 claimed", async () => {
+test("每日积分：claimed=false 而余额已增加 ⇒ 并发幂等已领取，checkin 回 claimed", async () => {
   const plugin = await makeBaizhiPlugin()({ client: {} })
   await withFetch(claimChainHandler({ claimed: false }), async (calls) => {
     const outcome = await plugin.auth.checkin(async () => sessionAuth())
     assert.deepEqual(outcome, { outcome: "claimed", message: "今日已领取" })
-    assert.equal(calls.length, 4, "claimed=false 不再复读钱包，也不能当成失败重发")
-    assert.equal(calls.filter((call) => new URL(call.url).pathname === DAILY_CREDIT_PATH).length, 1)
+    assert.equal(calls.length, 5, "claimed=false 必须回读钱包确认，不能凭报文就当已领取")
+    assert.equal(
+      calls.filter((call) => new URL(call.url).pathname === BAIZHI.walletBalancePath).length,
+      2,
+      "领取前后各读一次钱包",
+    )
+    assert.equal(
+      calls.filter((call) => new URL(call.url).pathname === DAILY_CREDIT_PATH).length,
+      1,
+      "确认已到账就不重发领取",
+    )
+  })
+})
+
+test("每日积分 #13：claimed=false + captcha_required ⇒ captcha，绝不误报「今日已领取」", async () => {
+  const { fetchImpl, calls } = scriptedClaimFetch({
+    wallets: [{ dailyClaimed: false, temporaryCents: 0 }],
+    claimValue: {
+      claimed: false,
+      amount_credit_cents: 0,
+      expires_at: "0001-01-01T00:00:00Z",
+      captcha_required: true,
+      captcha: {
+        id: "captcha-1",
+        master_image: "data:image/jpeg;base64,AAAA",
+        thumb_image: "data:image/jpeg;base64,BBBB",
+        width: 300,
+        height: 150,
+      },
+    },
+  })
+  const result = await claimDailyCredit(sessionCredential(), BAIZHI, { fetchImpl })
+  assert.deepEqual(result, {
+    kind: "captcha",
+    message: "上游要求图片验证码，请到 https://baizhi.cloud/console 手动领取每日积分",
+  })
+  assert.deepEqual(calls, [
+    `GET ${BAIZHI.walletBalancePath}`,
+    "POST /api/v1/public/captcha/challenge",
+    "POST /api/v1/public/captcha/redeem",
+    `POST ${DAILY_CREDIT_PATH}`,
+  ], "要求验证码时既不复读钱包，也不重发领取")
+})
+
+test("每日积分 #13：只带 captcha 对象、没有 captcha_required 也算要验证码", async () => {
+  const { fetchImpl } = scriptedClaimFetch({
+    wallets: [{ dailyClaimed: false, temporaryCents: 0 }],
+    claimValue: { claimed: false, captcha: { id: "captcha-2", width: 300, height: 150 } },
+  })
+  const result = await claimDailyCredit(sessionCredential(), BAIZHI, { fetchImpl })
+  assert.equal(result.kind, "captcha")
+  assert.match(result.message, /图片验证码.*baizhi\.cloud\/console/)
+})
+
+test("每日积分 #13：claimed=false 但钱包 dailyClaimed=true ⇒ already-claimed", async () => {
+  const { fetchImpl, calls } = scriptedClaimFetch({
+    wallets: [
+      { dailyClaimed: false, temporaryCents: 0 },
+      { dailyClaimed: true, temporaryCents: 0 },
+    ],
+    claimValue: { claimed: false },
+  })
+  const result = await claimDailyCredit(sessionCredential(), BAIZHI, { fetchImpl })
+  assert.deepEqual(result, { kind: "already-claimed", message: "今日已领取" })
+  assert.equal(calls.filter((call) => call === `GET ${BAIZHI.walletBalancePath}`).length, 2)
+})
+
+test("每日积分 #13：claimed=false 但 temporary 余额增加 ⇒ already-claimed", async () => {
+  const { fetchImpl } = scriptedClaimFetch({
+    wallets: [
+      { dailyClaimed: false, temporaryCents: 0 },
+      { dailyClaimed: false, temporaryCents: 10_000 },
+    ],
+    claimValue: { claimed: false },
+  })
+  const result = await claimDailyCredit(sessionCredential(), BAIZHI, { fetchImpl })
+  assert.deepEqual(result, { kind: "already-claimed", message: "今日已领取" })
+})
+
+test("每日积分 #13：claimed=false 且钱包也没到账 ⇒ failed，宿主当天还能重试", async () => {
+  const plugin = await makeBaizhiPlugin()({ client: {} })
+  const chain = () => scriptedClaimFetch({
+    wallets: [
+      { dailyClaimed: false, temporaryCents: 0 },
+      { dailyClaimed: false, temporaryCents: 0 },
+    ],
+    claimValue: { claimed: false, amount_credit_cents: 0, captcha_required: false },
+  })
+
+  const direct = chain()
+  const result = await claimDailyCredit(sessionCredential(), BAIZHI, { fetchImpl: direct.fetchImpl })
+  assert.deepEqual(result, {
+    kind: "failed",
+    message: "领取每日积分没有生效（上游返回 claimed:false），请稍后重试或到控制台手动领取",
+  })
+  assert.equal(
+    direct.calls.filter((call) => call === `GET ${BAIZHI.walletBalancePath}`).length,
+    2,
+    "判失败前必须回读钱包确认真的没到账",
+  )
+
+  const hooked = chain()
+  await withFetch(hooked.fetchImpl, async () => {
+    const outcome = await plugin.auth.checkin(async () => sessionAuth())
+    assert.equal(outcome.outcome, "failed", "只有 claimed / already-claimed 才允许记成当天已完成")
+    assert.match(outcome.message, /没有生效|手动领取/)
+  })
+})
+
+test("每日积分 #13：checkin 把要图片验证码的领取如实报成 captcha", async () => {
+  const plugin = await makeBaizhiPlugin()({ client: {} })
+  const { fetchImpl } = scriptedClaimFetch({
+    wallets: [{ dailyClaimed: false, temporaryCents: 0 }],
+    claimValue: { claimed: false, captcha_required: true, captcha: { id: "captcha-3" } },
+  })
+  await withFetch(fetchImpl, async () => {
+    const outcome = await plugin.auth.checkin(async () => sessionAuth())
+    assert.equal(outcome.outcome, "captcha")
+    assert.match(outcome.message, /图片验证码/)
   })
 })
 

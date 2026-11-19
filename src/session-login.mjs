@@ -22,7 +22,7 @@ import { createServer } from "node:net"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { findBrowser } from "./browser-login.mjs"
+import { browserLossMessage, cdpEndpointAlive, findBrowser } from "./browser-login.mjs"
 
 /** 默认等用户登录的上限（毫秒）。 */
 export const BROWSER_LOGIN_TIMEOUT_MS = 240_000
@@ -186,7 +186,15 @@ export async function openControlledBrowser({ url = "about:blank", profileDir, h
     await cdpSend(ws, 0, "Page.enable").catch(() => {})
     await cdpSend(ws, -1, "Page.navigate", { url }).catch(() => {})
   }
-  return { ws, close, profileDir: profile, persistent }
+  return {
+    ws,
+    close,
+    profileDir: profile,
+    persistent,
+    // 「窗口被关」和「浏览器自己回收了 CDP 目标」要分开报：后者窗口还开着。
+    debugPort: port,
+    running: () => child.exitCode === null && child.signalCode === null,
+  }
 }
 
 /**
@@ -312,7 +320,12 @@ export async function startBrowserLogin({
       try {
         while (Date.now() < deadline) {
           if (signal?.aborted) throw new Error("登录已取消")
-          if (closed()) throw new Error("受控浏览器窗口被关掉了（或被系统拦下没能启动）")
+          if (closed()) {
+            // 先分清是用户关了窗口，还是浏览器自己把 CDP 目标回收了（夸克 / UC）。
+            // 后者的窗口还开着，沿用「窗口被关掉了」会把用户引向错误的方向。
+            const endpointAlive = await cdpEndpointAlive(handle.debugPort, { running: handle.running })
+            throw new Error(browserLossMessage({ endpointAlive, browser }))
+          }
           if (typeof onPoll === "string" && onPoll.length > 0) {
             await cdpSend(handle.ws, pollId++, "Runtime.evaluate", { expression: onPoll, returnByValue: true }).catch(() => {})
           }
