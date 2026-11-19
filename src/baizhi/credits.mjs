@@ -77,11 +77,45 @@ function readCaptchaToken(data) {
 }
 
 /**
+ * 报文是不是在要求人机验证：`captcha_required === true`，或直接下发了 `captcha` 对象
+ * （上游回落的点选图片验证码，`{ id, master_image, thumb_image, width, height }`）。
+ */
+function needsCaptcha(value) {
+  if (readBoolField(value, "captcha_required") === true) return true
+  const captcha = value.captcha
+  return captcha !== null && typeof captcha === "object"
+}
+
+/**
+ * `claimed:false` 的三种含义必须分开判，不能一律当「今日已领取」（#13）：
+ *
+ * ① 上游要求人机验证（`captcha_required` / `captcha`）—— 这次**没领到**，要人去控制台手动领；
+ * ② 并发幂等 —— 回读钱包确认：今天确实已领取，或 temporary 余额比领取前多了；
+ * ③ 上游只是没发积分 —— 这是失败。报成「已领取」会让宿主当天不再重试，
+ *    额度卡片也永远不出「每日积分」行（`readUsage` 只在 temporary > 0 时建这个窗口）。
+ */
+async function classifyUnclaimedClaim({ value, walletBefore, cookie, site, fetchImpl, timeoutMs }) {
+  if (needsCaptcha(value)) {
+    return { kind: "captcha", message: "上游要求图片验证码，请到 https://baizhi.cloud/console 手动领取每日积分" }
+  }
+  const walletAfter = await fetchWallet(cookie, site, { fetchImpl, timeoutMs })
+  if (walletAfter.ok
+    && (walletAfter.wallet.dailyClaimed || walletAfter.wallet.temporary > walletBefore.temporary)) {
+    return { kind: "already-claimed", message: "今日已领取" }
+  }
+  return {
+    kind: "failed",
+    message: "领取每日积分没有生效（上游返回 claimed:false），请稍后重试或到控制台手动领取",
+  }
+}
+
+/**
  * 领取每日积分：钱包幂等状态 → challenge → 本地 PoW → redeem → daily-temporary-credit。
  *
- * 已领取 / 领取前钱包失败时绝不发 POST。`claimed:false` 是并发下另一会话已领取的
- * 幂等结果，不是失败。实际到账只认领取前后 `temporary_credit_cents` 的正差额；
- * 上游报文没有金额、复读钱包失败或没有正差额时，只报告通用成功，不硬编码 100。
+ * 已领取 / 领取前钱包失败时绝不发 POST。只有 `claimed:true` 是本次真的领取成功；
+ * `claimed:false` 按 {@link classifyUnclaimedClaim} 分 captcha / already-claimed / failed。
+ * 实际到账只认领取前后 `temporary_credit_cents` 的正差额；上游报文没有金额、
+ * 复读钱包失败或没有正差额时，只报告通用成功，不硬编码 100。
  */
 export async function claimDailyCredit(credential, site, { fetchImpl = fetch, timeoutMs = 10_000 } = {}) {
   const cookie = cookieOf(credential, site.sessionCookies, site.sessionCookie)
@@ -139,7 +173,16 @@ export async function claimDailyCredit(credential, site, { fetchImpl = fetch, ti
     const claimEnvelope = unwrapEnvelope(claimResult.data)
     if (!claimEnvelope.ok) return { kind: "failed", message: `领取每日积分失败：${claimEnvelope.error}` }
     const claimed = readBoolField(claimEnvelope.value, "claimed")
-    if (claimed === false) return { kind: "already-claimed", message: "今日已领取" }
+    if (claimed === false) {
+      return await classifyUnclaimedClaim({
+        value: claimEnvelope.value,
+        walletBefore: walletBefore.wallet,
+        cookie,
+        site,
+        fetchImpl,
+        timeoutMs,
+      })
+    }
     if (claimed !== true) {
       return { kind: "failed", message: "领取每日积分的响应里没有明确的 claimed 布尔值（上游形态可能已变）" }
     }
