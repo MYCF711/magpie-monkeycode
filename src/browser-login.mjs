@@ -417,6 +417,28 @@ async function cdpCookies(pageWsUrl) {
 }
 
 /**
+ * 受控浏览器的启动参数（纯函数，便于单测）。
+ *
+ * `headless` 默认 false —— 登录要用户看着窗口操作；只有「用官方页面替用户点一下」
+ * 这类无交互场景才传 true（`--headless=new`，不弹窗、不抢桌面，见铁律 15）。
+ *
+ * @param {{port:number, profileDir:string, headless?:boolean, url?:string}} o
+ * @returns {string[]}
+ */
+export function controlledBrowserArgs({ port, profileDir, headless = false, url = "about:blank" }) {
+  return [
+    `--remote-debugging-port=${port}`,
+    `--user-data-dir=${profileDir}`,
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-extensions",
+    "--disable-background-networking",
+    ...(headless ? ["--headless=new", "--window-size=1440,900"] : []),
+    url,
+  ]
+}
+
+/**
  * 打开受控浏览器，等用户登录，返回需要的 Cookie。
  *
  * @param {object} o
@@ -424,22 +446,18 @@ async function cdpCookies(pageWsUrl) {
  * @param {string} o.url 登录页
  * @param {string[]} [o.cookieNames] 必须拿到的 cookie 名
  * @param {number} [o.timeoutMs] 默认 5 分钟
+ * @param {boolean} [o.headless] 默认 false（登录必须有头；仅自动化场景传 true）
  * @param {AbortSignal} [o.signal]
  * @returns {Promise<{cookie:string, found:Record<string,string>, browser:string}>}
  */
-export async function chromiumLogin({ browser, url, cookieNames = [], timeoutMs = 5 * 60_000, signal }) {
+export async function chromiumLogin({ browser, url, cookieNames = [], timeoutMs = 5 * 60_000, headless = false, signal }) {
   if (!browser?.path) throw new Error("没有可用的 Chromium 浏览器")
   const profile = mkdtempSync(join(tmpdir(), "magpie-login-"))
   const port = await freePort()
-  const child = spawn(browser.path, [
-    `--remote-debugging-port=${port}`,
-    `--user-data-dir=${profile}`,
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--disable-extensions",
-    "--disable-background-networking",
-    url,
-  ], { stdio: "ignore", windowsHide: false })
+  const child = spawn(browser.path, controlledBrowserArgs({ port, profileDir: profile, headless, url }), {
+    stdio: "ignore",
+    windowsHide: headless,
+  })
 
   const cleanup = () => {
     try { child.kill() } catch {}

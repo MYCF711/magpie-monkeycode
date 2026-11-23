@@ -884,7 +884,18 @@ export function makeBaizhiPlugin(site = BAIZHI) {
           const key = `${site.id}\n${identity}`
           try {
             return await checkinLock.run(key, async () => {
-              const result = await claimDailyCredit(credential, site)
+              // 优先用无头受控浏览器跑官方控制台（官方前端自己算 interaction），
+              // 失败再回落 HTTP。测试 / 无窗环境用 MAGPIE_PLUGIN_DISABLE_BROWSER=1 关掉。
+              const result = await claimDailyCredit(credential, site, {
+                // 无头浏览器领积分：**默认关**。机制本身是通的（无头 Edge + 注入会话 +
+                // 官方控制台 + 真实 CDP 点击，官方前端自己发请求），但 2026-11-24 实测
+                // 3 次全部被上游判 captcha_required（页面弹「请按下图顺序点击四个图形」），
+                // 钱包一分没变 —— 开了只会每次多起一个 Chromium 却仍领不到。
+                // 按「纯正向 / 有代价的不做」：默认关，账号没被风控过往的可以显式打开。
+                browser:
+                  process.env.MAGPIE_BAIZHI_BROWSER_CLAIM === "1" &&
+                  process.env.MAGPIE_PLUGIN_DISABLE_BROWSER !== "1",
+              })
               // 宿主只在 claimed 时记录领取时间；已领取也必须回 claimed，否则卡片会一直黄灯。
               if (result.kind === "already-claimed") return { outcome: "claimed", message: "今日已领取" }
               if (result.kind === "captcha") {

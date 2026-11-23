@@ -449,6 +449,103 @@ test("每日积分：坏 challenge 映射 captcha，绝不进入 redeem / 领取
   )
 })
 
+test("每日积分：browser=true 先走真页面，成功就完全不碰 HTTP 领取链", async () => {
+  let httpCalls = 0
+  await withFetch(
+    () => {
+      httpCalls += 1
+      throw new Error("浏览器路径成功后不该再发 HTTP")
+    },
+    async () => {
+      let seen
+      const result = await claimDailyCredit(sessionCredential(), BAIZHI, {
+        browser: true,
+        browserClaim: async (options) => {
+          seen = options
+          return { kind: "claimed", credit: 100, unit: "credit" }
+        },
+      })
+      assert.deepEqual(result, { kind: "claimed", credit: 100, unit: "credit" })
+      assert.equal(seen.credential.session_cookie, "sess", "凭据原样交给浏览器模块")
+      assert.equal(seen.site.id, BAIZHI.id)
+      assert.equal(httpCalls, 0, "浏览器路径成功就不再发 challenge / 领取 POST")
+    },
+  )
+})
+
+test("每日积分：browser=true 回 captcha 时如实上报，不再跑 HTTP", async () => {
+  let httpCalls = 0
+  await withFetch(
+    () => {
+      httpCalls += 1
+      throw new Error("captcha 已经说清楚了，不该再跑 HTTP")
+    },
+    async () => {
+      const result = await claimDailyCredit(sessionCredential(), BAIZHI, {
+        browser: true,
+        browserClaim: async () => ({ kind: "captcha", message: "上游要求图片验证码，请到 https://baizhi.cloud/console 手动领取每日积分" }),
+      })
+      assert.equal(result.kind, "captcha")
+      assert.match(result.message, /图片验证码/)
+      assert.equal(httpCalls, 0)
+    },
+  )
+})
+
+test("每日积分：browser=true 失败后回落 HTTP 领取链", async () => {
+  let browserCalls = 0
+  await withFetch(claimChainHandler(), async (calls) => {
+    const result = await claimDailyCredit(sessionCredential(), BAIZHI, {
+      browser: true,
+      browserClaim: async () => {
+        browserCalls += 1
+        return { kind: "failed", message: "页面没有按钮" }
+      },
+    })
+    assert.equal(result.kind, "claimed")
+    assert.equal(result.credit, 100)
+    assert.equal(browserCalls, 1)
+    assert.equal(
+      calls.filter((call) => new URL(call.url).pathname === DAILY_CREDIT_PATH).length,
+      1,
+      "浏览器失败后 HTTP 回落照常走",
+    )
+  })
+})
+
+test("每日积分：两条路都失败时把浏览器那条原因也带上（不静默）", async () => {
+  let walletReads = 0
+  await withFetch(
+    (url) => {
+      const path = new URL(url).pathname
+      if (path === BAIZHI.walletBalancePath) {
+        walletReads += 1
+        return walletResponse({ dailyClaimed: false, temporaryCents: 0 })
+      }
+      if (path === "/api/v1/public/captcha/challenge") {
+        return Response.json({ code: 0, data: { token: "t", challenge: { c: 1, s: 1, d: 1 } } })
+      }
+      if (path === "/api/v1/public/captcha/redeem") {
+        return Response.json({ code: 0, data: { success: true, token: "cap" } })
+      }
+      if (path === DAILY_CREDIT_PATH) {
+        return Response.json({ code: 0, data: { claimed: false, captcha_required: false } })
+      }
+      throw new Error(`unexpected ${url}`)
+    },
+    async () => {
+      const result = await claimDailyCredit(sessionCredential(), BAIZHI, {
+        browser: true,
+        browserClaim: async () => ({ kind: "failed", message: "页面没有按钮" }),
+      })
+      assert.equal(result.kind, "failed")
+      assert.match(result.message, /没有生效|手动领取/)
+      assert.match(result.message, /浏览器自动领取也没成功：页面没有按钮/)
+      assert.equal(walletReads, 2, "HTTP 回落仍然做了领取前后钱包确认")
+    },
+  )
+})
+
 test("每日积分：同账号两个并发 checkin 单飞，只跑一条领取链", async () => {
   const plugin = await makeBaizhiPlugin()({ client: {} })
   let claimCount = 0

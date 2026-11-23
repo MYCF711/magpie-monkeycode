@@ -22,7 +22,7 @@ import { createServer } from "node:net"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { browserLossMessage, cdpEndpointAlive, findBrowser } from "./browser-login.mjs"
+import { browserLossMessage, cdpEndpointAlive, controlledBrowserArgs, findBrowser } from "./browser-login.mjs"
 
 /** 默认等用户登录的上限（毫秒）。 */
 export const BROWSER_LOGIN_TIMEOUT_MS = 240_000
@@ -47,7 +47,7 @@ async function getJson(url, timeoutMs = 1_500) {
   return response.json()
 }
 
-function cdpSend(ws, id, method, params = {}) {
+export function cdpSend(ws, id, method, params = {}) {
   return new Promise((resolve, reject) => {
     const onMessage = (event) => {
       let message
@@ -139,16 +139,10 @@ export async function openControlledBrowser({ url = "about:blank", profileDir, h
   const profile = persistent ? profileDir : mkdtempSync(join(tmpdir(), "magpie-session-login-"))
   if (persistent) mkdirSync(profile, { recursive: true })
   const port = await freePort()
-  const child = spawn(browser.path, [
-    `--remote-debugging-port=${port}`,
-    `--user-data-dir=${profile}`,
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--disable-extensions",
-    "--disable-background-networking",
-    ...(headless ? ["--headless=new"] : []),
-    url,
-  ], { stdio: "ignore", windowsHide: headless })
+  const child = spawn(browser.path, controlledBrowserArgs({ port, profileDir: profile, headless, url }), {
+    stdio: "ignore",
+    windowsHide: headless,
+  })
 
   const close = () => {
     try {
