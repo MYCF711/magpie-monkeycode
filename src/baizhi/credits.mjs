@@ -110,14 +110,25 @@ async function classifyUnclaimedClaim({ value, walletBefore, cookie, site, fetch
 }
 
 /**
- * 领取每日积分：钱包幂等状态 → challenge → 本地 PoW → redeem → daily-temporary-credit。
+ * 领取每日积分：默认走 HTTP 协议路径；`browser: true` 时先走「无头浏览器跑官方控制台」
+ * 的真页面路径，失败再回落到 HTTP（客户端伪造的 interaction 已被上游静默降级，见 #13）。
  *
  * 已领取 / 领取前钱包失败时绝不发 POST。只有 `claimed:true` 是本次真的领取成功；
  * `claimed:false` 按 {@link classifyUnclaimedClaim} 分 captcha / already-claimed / failed。
  * 实际到账只认领取前后 `temporary_credit_cents` 的正差额；上游报文没有金额、
  * 复读钱包失败或没有正差额时，只报告通用成功，不硬编码 100。
+ *
+ * @param {{fetchImpl?:Function, timeoutMs?:number, browser?:boolean, browserTimeoutMs?:number, browserClaim?:Function}} [options]
+ *   `browser`：用真实浏览器点官方页面（`runtime.mjs` 的 checkin 默认开启；测试环境用
+ *   `MAGPIE_PLUGIN_DISABLE_BROWSER=1` 关掉）。`browserClaim` 仅供单测注入假实现。
  */
-export async function claimDailyCredit(credential, site, { fetchImpl = fetch, timeoutMs = 10_000 } = {}) {
+export async function claimDailyCredit(credential, site, {
+  fetchImpl = fetch,
+  timeoutMs = 10_000,
+  browser = false,
+  browserTimeoutMs = 90_000,
+  browserClaim,
+} = {}) {
   const cookie = cookieOf(credential, site.sessionCookies, site.sessionCookie)
   if (cookie === undefined) {
     return {
@@ -125,6 +136,30 @@ export async function claimDailyCredit(credential, site, { fetchImpl = fetch, ti
       message: "未配置会话（session_cookie）—— 每日积分只认网页登录态，请用「浏览器登录」添加账号",
     }
   }
+
+  let browserFailure
+  if (browser === true) {
+    try {
+      // 动态 import：daily-claim-browser 反过来要用本模块的 fetchWallet，静态互引会成环。
+      const run = browserClaim ?? (await import("./daily-claim-browser.mjs")).claimDailyCreditInBrowser
+      const result = await run({ credential, site, fetchImpl, timeoutMs: browserTimeoutMs })
+      if (result !== undefined && result.kind !== "failed") return result
+      browserFailure = result?.message
+    } catch (error) {
+      browserFailure = error instanceof Error ? error.message : String(error)
+    }
+  }
+
+  const result = await claimDailyCreditHttp(cookie, site, { fetchImpl, timeoutMs })
+  if (browserFailure !== undefined && result.kind === "failed") {
+    // 两条路都没成：把浏览器那条的真实原因也带上，别让用户只看到 HTTP 的笼统失败。
+    return { ...result, message: `${result.message}；浏览器自动领取也没成功：${browserFailure}` }
+  }
+  return result
+}
+
+/** HTTP 协议路径（旧 Cap PoW + `captcha_token`）—— 上游现已忽略，仅作回落。 */
+async function claimDailyCreditHttp(cookie, site, { fetchImpl = fetch, timeoutMs = 10_000 } = {}) {
   const base = site.platformBaseUrl
   try {
     const walletBefore = await fetchWallet(cookie, site, { fetchImpl, timeoutMs })

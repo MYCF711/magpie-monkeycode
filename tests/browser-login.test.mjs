@@ -7,7 +7,7 @@ import { mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-const { browserCandidates, findBrowser, selectCookies, waitForFile } = await import("../src/browser-login.mjs")
+const { browserCandidates, controlledBrowserArgs, findBrowser, selectCookies, waitForFile } = await import("../src/browser-login.mjs")
 
 test("Windows 候选：注册表命中优先，Chrome 在 Edge 前，国产浏览器在列", () => {
   const env = {
@@ -50,6 +50,20 @@ test("selectCookies 只取需要的名字，忽略空值，拼成 Cookie header"
     found: { sid: "abc", uid: "42" },
   })
   assert.deepEqual(selectCookies(null, ["sid"]), { header: "", found: {} })
+})
+
+test("controlledBrowserArgs：默认有头，headless:true 才加 --headless=new", () => {
+  const headed = controlledBrowserArgs({ port: 9222, profileDir: "C:\tmp\p", url: "https://x/" })
+  assert.ok(!headed.some((arg) => arg.startsWith("--headless")), "登录默认必须有头")
+  assert.ok(headed.includes("--remote-debugging-port=9222"))
+  assert.ok(headed.includes("--user-data-dir=C:\tmp\p"))
+  assert.equal(headed.at(-1), "https://x/")
+
+  const headless = controlledBrowserArgs({ port: 9223, profileDir: "C:\tmp\q", headless: true })
+  assert.ok(headless.includes("--headless=new"), "自动化领取必须无头")
+  assert.ok(headless.includes("--window-size=1440,900"), "默认 780×580 的窗口尺寸本身就是指纹")
+  assert.equal(headless.at(-1), "about:blank")
+  assert.ok(!headed.includes("--headless=new"))
 })
 
 test("waitForFile：文件出现返回 true，超时返回 false", async () => {
